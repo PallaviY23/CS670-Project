@@ -1,0 +1,32 @@
+{
+  "name": "privacy-preserving-digital-kyc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node server/index.js",
+    "dev:web": "vite --config vite.config.js --host 0.0.0.0",
+    "build": "vite build --config vite.config.js",
+    "circuit:build": "node scripts/prepare-build.cjs && cd circuits && circom2 kyc_claims.circom --r1cs --wasm --sym -l ../node_modules -o ../build/circuit",
+    "setup:demo": "npm run circuit:build && node scripts/setup-demo.mjs",
+    "test": "npm run circuit:build && node --test"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "snarkjs": "^0.7.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "circom2": "0.2.16",
+    "concurrently": "^9.2.1",
+    "vite": "^6.3.5"
+  }
+}
