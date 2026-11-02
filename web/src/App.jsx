@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { buildStarterInput } from "../../src/prover/inputs.js";
+import { createProverClient } from "../../src/prover/worker-client.js";
 import {
   Activity,
   ArrowDownRight,
@@ -18,6 +20,12 @@ import {
 } from "lucide-react";
 
 const initialHealth = { status: "checking", proofReady: false };
+const stageLabels = {
+  artifacts: "Loading proving artifacts",
+  witness: "Computing witness",
+  proof: "Generating Groth16 proof",
+  verify: "Verifying with service provider",
+};
 
 async function createReceiptId(proof, publicSignals) {
   const payload = new TextEncoder().encode(JSON.stringify({ proof, publicSignals }));
@@ -35,6 +43,10 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState(null);
+  const [stage, setStage] = useState("artifacts");
+  const proverRef = useRef(null);
+
+  useEffect(() => () => proverRef.current?.terminate(), []);
 
   useEffect(() => {
     let active = true;
@@ -59,17 +71,13 @@ function App() {
     setBusy(true);
     setError("");
     setReceipt(null);
-    const startedAt = performance.now();
+    setStage("artifacts");
 
     try {
-      const { groth16 } = await import("snarkjs");
-      const { proof, publicSignals } = await groth16.fullProve(
-        { age: Number(age), kycVerified: kycVerified ? 1 : 0 },
-        "/api/prover/wasm",
-        "/api/prover/zkey",
-      );
-      const provingMs = Number((performance.now() - startedAt).toFixed(2));
-      const proofBytes = new TextEncoder().encode(JSON.stringify(proof)).length;
+      const input = buildStarterInput({ age, kycVerified });
+      proverRef.current ??= createProverClient();
+      const { proof, publicSignals, timings, proofBytes } = await proverRef.current.prove(input, { onProgress: setStage });
+      setStage("verify");
       const [receiptId, verificationResponse] = await Promise.all([
         createReceiptId(proof, publicSignals),
         fetch("/api/verify", {
@@ -84,7 +92,7 @@ function App() {
         throw new Error(verification.error ?? "The verifier could not process this proof.");
       }
 
-      setReceipt({ ...verification, provingMs, proofBytes, receiptId });
+      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw, receiptId });
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Proof generation failed.");
     } finally {
@@ -220,7 +228,7 @@ function App() {
                   <h3>Building a proof</h3>
                   <p>Your witness is being processed locally. No age value leaves this tab.</p>
                   <div className="progress-track"><span /></div>
-                  <span className="mono progress-caption">GROTH16 · BN128</span>
+                  <span className="mono progress-caption">{stageLabels[stage]?.toUpperCase()} · GROTH16 · BN128</span>
                 </div>
               ) : (
                 <div className="receipt-content">
@@ -232,9 +240,10 @@ function App() {
                   <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
                   <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
                   <div className="receipt-metrics">
+                    <div><span>WITNESS TIME</span><strong>{receipt.witnessMs} <small>ms</small></strong></div>
                     <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
                     <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
-                    <div><span>PROOF SIZE</span><strong>{(receipt.proofBytes / 1024).toFixed(2)} <small>KB</small></strong></div>
+                    <div><span>PROOF SIZE</span><strong>{receipt.proofBytes} <small>B</small></strong></div>
                   </div>
                   <div className="receipt-id"><span>LOCAL RECEIPT ID</span><code>{receipt.receiptId}</code></div>
                   <button className="reset-button" type="button" onClick={resetDemo}><RotateCcw size={14} />Reset demo</button>
