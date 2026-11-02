@@ -15,9 +15,14 @@ import {
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  Building2,
+  RefreshCw,
+  Ban,
+  Clock,
+  Database,
 } from "lucide-react";
 
-const initialHealth = { status: "checking", proofReady: false };
+const initialHealth = { status: "checking", proofReady: false, revocationRoot: null };
 
 async function createReceiptId(proof, publicSignals) {
   const payload = new TextEncoder().encode(JSON.stringify({ proof, publicSignals }));
@@ -29,6 +34,7 @@ async function createReceiptId(proof, publicSignals) {
 }
 
 function App() {
+  const [activeTab, setActiveTab] = useState("workspace"); // "workspace" | "sp-view"
   const [health, setHealth] = useState(initialHealth);
   const [age, setAge] = useState(21);
   const [kycVerified, setKycVerified] = useState(true);
@@ -36,21 +42,86 @@ function App() {
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState(null);
 
+  // Service Provider (Task S9) state
+  const [spRequest, setSpRequest] = useState(null);
+  const [spLoading, setSpLoading] = useState(false);
+  const [spAuditEntries, setSpAuditEntries] = useState([]);
+  const [spVerifyResult, setSpVerifyResult] = useState(null);
+  const [revocationRoot, setRevocationRoot] = useState(null);
+  const [revokeInputId, setRevokeInputId] = useState("1001");
+  const [revokeMsg, setRevokeMsg] = useState("");
+
   useEffect(() => {
     let active = true;
     fetch("/api/health")
       .then((response) => response.json())
       .then((payload) => {
-        if (active) setHealth({ ...payload, status: "online" });
+        if (active) {
+          setHealth({ ...payload, status: "online" });
+          if (payload.revocationRoot) setRevocationRoot(payload.revocationRoot);
+        }
       })
       .catch(() => {
         if (active) setHealth({ status: "offline", proofReady: false });
       });
 
+    loadAuditLog();
+
     return () => {
       active = false;
     };
   }, []);
+
+  async function loadAuditLog() {
+    try {
+      const res = await fetch("/api/sp/audit-log");
+      if (res.ok) {
+        const data = await res.json();
+        setSpAuditEntries(data.entries ?? []);
+      }
+    } catch {
+      // ignore offline errors
+    }
+  }
+
+  async function requestSpChallenge() {
+    setSpLoading(true);
+    setSpVerifyResult(null);
+    try {
+      const res = await fetch("/api/sp/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spId: "123456789", minAgeOffset: 180000 }),
+      });
+      const data = await res.json();
+      setSpRequest(data);
+    } catch (err) {
+      alert("Failed to request challenge from Service Provider.");
+    } finally {
+      setSpLoading(false);
+    }
+  }
+
+  async function handleRevokeCredential(e) {
+    e.preventDefault();
+    if (!revokeInputId) return;
+    try {
+      const res = await fetch("/api/revocation/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credentialId: revokeInputId }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRevokeMsg(`Credential ${revokeInputId} revoked! New Root: ${data.newRoot?.slice(0, 16)}...`);
+        setRevocationRoot(data.newRoot);
+      } else {
+        setRevokeMsg(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      setRevokeMsg(`Request failed: ${err.message}`);
+    }
+  }
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -109,7 +180,25 @@ function App() {
 
         <div className="sidebar-label">WORKSPACE</div>
         <nav className="side-nav" aria-label="Workspace sections">
-          <a className="side-link active" href="#proof-workspace"><KeyRound size={16} />Proof workspace</a>
+          <button
+            type="button"
+            className={`side-link ${activeTab === "workspace" ? "active" : ""}`}
+            onClick={() => setActiveTab("workspace")}
+            style={{ border: 0, textAlign: "left", width: "100%", cursor: "pointer" }}
+          >
+            <KeyRound size={16} />Proof workspace
+          </button>
+          <button
+            type="button"
+            className={`side-link ${activeTab === "sp-view" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("sp-view");
+              loadAuditLog();
+            }}
+            style={{ border: 0, textAlign: "left", width: "100%", cursor: "pointer" }}
+          >
+            <Building2 size={16} />Service Provider (SP)
+          </button>
           <a className="side-link" href="#proof-flow"><Network size={16} />Proof flow</a>
           <a className="side-link" href="#team"><Activity size={16} />Build status</a>
         </nav>
@@ -125,7 +214,11 @@ function App() {
 
       <main id="top" className="main-area">
         <header className="topbar">
-          <div className="breadcrumb"><span>PROJECT</span><ArrowRight size={13} /><strong>Proof lab</strong></div>
+          <div className="breadcrumb">
+            <span>PROJECT</span>
+            <ArrowRight size={13} />
+            <strong>{activeTab === "sp-view" ? "Service Provider Portal (Apex Bank)" : "Proof lab"}</strong>
+          </div>
           <div className="topbar-status">
             <span className={`api-indicator ${health.status}`} />
             <span>{apiLabel}</span>
@@ -135,113 +228,250 @@ function App() {
         </header>
 
         <div className="page-content">
-          <section className="page-intro" id="proof-workspace">
-            <div className="intro-copy">
-              <div className="eyebrow"><span className="eyebrow-line" />ZERO-KNOWLEDGE DEMONSTRATION</div>
-              <h1>Prove the claim.<br /><em>Keep the identity.</em></h1>
-              <p className="intro-description">Show that a KYC requirement is met without handing over the information behind it.</p>
-            </div>
-            <div className="intro-side-note">
-              <span className="side-note-index">01 / 03</span>
-              <p>One proof. Two claims.<br />No personal data in the request.</p>
-              <div className="mini-claims"><span>AGE ≥ 18</span><span>KYC VERIFIED</span></div>
-            </div>
-          </section>
-
-          <div className="prototype-banner">
-            <CircleAlert size={17} />
-            <p><strong>Prototype boundary</strong> The KYC status is currently a simulated private input, not an issuer-signed credential.</p>
-            <a href="#proof-flow">See the flow <ArrowRight size={13} /></a>
-          </div>
-
-          <section className="workspace-grid" aria-label="Proof generation workspace">
-            <form className="panel request-panel" onSubmit={handleSubmit}>
-              <div className="panel-heading">
-                <div>
-                  <div className="section-kicker">01 / PRIVATE WITNESS</div>
-                  <h2>Set up a claim</h2>
+          {activeTab === "sp-view" ? (
+            /* --- SERVICE PROVIDER DEMO VIEW (Task S9) --- */
+            <section className="sp-section">
+              <div className="page-intro">
+                <div className="intro-copy">
+                  <div className="eyebrow"><span className="eyebrow-line" />SERVICE PROVIDER VIEW (APEX FINANCIAL)</div>
+                  <h1>High-Yield Account<br /><em>Compliance Verification</em></h1>
+                  <p className="intro-description">
+                    The relying party requests compliance proofs (Age ≥ 18 and Active KYC) without ever receiving
+                    the customer&apos;s date of birth, name, or raw government identity documents.
+                  </p>
                 </div>
-                <span className="panel-icon"><Fingerprint size={18} /></span>
-              </div>
-              <p className="panel-subtitle">These values are used in your browser to build the proof.</p>
-
-              <label className="field-label" htmlFor="age">Your age <span>PRIVATE</span></label>
-              <div className="age-input-wrap">
-                <input id="age" name="age" type="number" min="0" max="255" required value={age} onChange={(event) => setAge(event.target.value)} />
-                <span>years</span>
-              </div>
-              <div className="field-hint"><LockKeyhole size={13} /> Age is not sent to the API.</div>
-
-              <div className="field-label kyc-label">Credential status <span className="simulated-label">SIMULATED</span></div>
-              <label className="toggle-row" htmlFor="kyc-verified">
-                <span className="toggle-copy"><strong>KYC verified</strong><small>Private circuit input for this demo</small></span>
-                <input id="kyc-verified" type="checkbox" checked={kycVerified} onChange={(event) => setKycVerified(event.target.checked)} />
-                <span className="toggle-track" aria-hidden="true"><span /></span>
-              </label>
-
-              <div className="claim-summary">
-                <div><span className="summary-dot" /><span>Claim 01</span><strong>Age ≥ 18</strong></div>
-                <div><span className="summary-dot" /><span>Claim 02</span><strong>KYC verified</strong></div>
+                <div className="intro-side-note">
+                  <span className="side-note-index">SP ID: 123456789</span>
+                  <p>Fail-closed verifier pipeline with single-use challenges & nullifiers.</p>
+                  <div className="mini-claims"><span>ANTI-REPLAY</span><span>REVOCATION AWARE</span><span>ZERO ATTRIBUTES LOGGED</span></div>
+                </div>
               </div>
 
-              {!health.proofReady && (
-                <div className="setup-hint">
-                  <CircleAlert size={15} />
-                  <span>{health.status === "offline" ? "Start the API, then reload." : "Run npm run setup:demo to create local proving keys."}</span>
-                </div>
-              )}
-              {error && <div className="error-message" role="alert"><CircleAlert size={15} />{error}</div>}
-
-              <button className="primary-button" type="submit" disabled={!health.proofReady || busy || age === ""}>
-                {busy ? <><span className="spinner" />Generating proof locally</> : <><Sparkles size={16} />Generate & verify<ArrowRight size={15} /></>}
-              </button>
-              <div className="button-footnote"><span className="live-dot" />{health.proofReady ? "Proof setup ready" : "Proof setup not initialized"}</div>
-            </form>
-
-            <section className={`panel receipt-panel ${receipt ? (receipt.accepted ? "accepted" : "not-accepted") : ""}`} aria-live="polite">
-              <div className="panel-heading">
-                <div>
-                  <div className="section-kicker">02 / SERVICE PROVIDER</div>
-                  <h2>Verification receipt</h2>
-                </div>
-                <span className="panel-icon receipt-icon">{receipt?.accepted ? <CircleCheck size={19} /> : receipt ? <CircleAlert size={19} /> : <ShieldCheck size={19} />}</span>
-              </div>
-
-              {!receipt && !busy ? (
-                <div className="empty-receipt">
-                  <div className="empty-art"><div className="art-ring ring-one" /><div className="art-ring ring-two" /><ShieldCheck size={34} strokeWidth={1.2} /></div>
-                  <h3>Awaiting proof</h3>
-                  <p>When verification completes, the result and public claim signals will appear here.</p>
-                  <div className="empty-state-rule"><span /><span>NO PROOF DATA RECEIVED</span><span /></div>
-                </div>
-              ) : busy ? (
-                <div className="verifying-state">
-                  <span className="large-spinner" />
-                  <h3>Building a proof</h3>
-                  <p>Your witness is being processed locally. No age value leaves this tab.</p>
-                  <div className="progress-track"><span /></div>
-                  <span className="mono progress-caption">GROTH16 · BN128</span>
-                </div>
-              ) : (
-                <div className="receipt-content">
-                  <div className={`receipt-outcome ${receipt.accepted ? "success" : "failure"}`}>
-                    {receipt.accepted ? <CircleCheck size={21} /> : <CircleAlert size={21} />}
-                    <div><strong>{receipt.accepted ? "Claims verified" : receipt.proofValid ? "Proof valid · claim not met" : "Proof rejected"}</strong><span>{receipt.accepted ? "Service provider may proceed" : "The requested condition was not satisfied"}</span></div>
+              {/* Step 1: Request Challenge */}
+              <div className="sp-card">
+                <div className="sp-card-header">
+                  <div>
+                    <div className="section-kicker">STEP 01 / CHALLENGE ISSUANCE</div>
+                    <h3>Anti-Replay Nonce & Policy</h3>
                   </div>
-                  <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
-                  <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
-                  <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
-                  <div className="receipt-metrics">
-                    <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
-                    <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
-                    <div><span>PROOF SIZE</span><strong>{(receipt.proofBytes / 1024).toFixed(2)} <small>KB</small></strong></div>
-                  </div>
-                  <div className="receipt-id"><span>LOCAL RECEIPT ID</span><code>{receipt.receiptId}</code></div>
-                  <button className="reset-button" type="button" onClick={resetDemo}><RotateCcw size={14} />Reset demo</button>
+                  <button className="sp-btn" onClick={requestSpChallenge} disabled={spLoading}>
+                    <RefreshCw size={14} className={spLoading ? "spin" : ""} />
+                    {spRequest ? "Refresh Challenge" : "Issue New Proof Request"}
+                  </button>
                 </div>
-              )}
+                <p className="panel-subtitle">
+                  The service provider generates an ephemeral random scalar field challenge with a 5-minute TTL.
+                </p>
+
+                {spRequest ? (
+                  <div className="challenge-box">
+                    <div className="challenge-field"><span>REQUEST ID</span><strong>{spRequest.requestId}</strong></div>
+                    <div className="challenge-field"><span>RANDOM NONCE (Fr)</span><strong>{spRequest.challenge}</strong></div>
+                    <div className="challenge-field"><span>SERVICE PROVIDER ID</span><strong>{spRequest.spId}</strong></div>
+                    <div className="challenge-field"><span>SERVER DATE</span><strong>{spRequest.currentDate}</strong></div>
+                    <div className="challenge-field"><span>MIN AGE OFFSET</span><strong>{spRequest.minAgeOffset} (≥ 18 years)</strong></div>
+                    <div className="challenge-field"><span>EXPIRES AT</span><strong>{spRequest.expiresAt}</strong></div>
+                  </div>
+                ) : (
+                  <div style={{ color: "#77857b", fontSize: "11px", fontStyle: "italic" }}>
+                    Click &ldquo;Issue New Proof Request&rdquo; to generate an anti-replay challenge from POST /api/sp/request.
+                  </div>
+                )}
+              </div>
+
+              {/* Step 2: Revocation Registry State */}
+              <div className="sp-card">
+                <div className="sp-card-header">
+                  <div>
+                    <div className="section-kicker">REVOCATION REGISTRY / POSEIDON MERKLE TREE</div>
+                    <h3>Active Credential Management (Task S6)</h3>
+                  </div>
+                  <span className="mono" style={{ fontSize: "11px", color: "#365e49" }}>DEPTH 16 (65,536 LEAVES)</span>
+                </div>
+                <div className="challenge-box">
+                  <div className="challenge-field">
+                    <span>CURRENT REVOCATION ROOT</span>
+                    <strong>{revocationRoot ?? "Initialized"}</strong>
+                  </div>
+                </div>
+
+                <form onSubmit={handleRevokeCredential} style={{ display: "flex", gap: "10px", alignItems: "center", marginTop: "12px" }}>
+                  <label htmlFor="revoke-id" style={{ fontSize: "11px", color: "#4f5f55" }}>Revoke Credential ID:</label>
+                  <input
+                    id="revoke-id"
+                    type="text"
+                    value={revokeInputId}
+                    onChange={(e) => setRevokeInputId(e.target.value)}
+                    style={{ padding: "6px 10px", border: "1px solid #cfd8cd", borderRadius: "4px", fontFamily: "var(--mono)", fontSize: "12px" }}
+                  />
+                  <button type="submit" className="sp-btn-secondary">
+                    <Ban size={14} color="#a4473c" /> Revoke Immediately
+                  </button>
+                  {revokeMsg && <span style={{ fontSize: "11px", color: "#3a5647" }}>{revokeMsg}</span>}
+                </form>
+              </div>
+
+              {/* Step 3: Privacy-Preserving Audit Log */}
+              <div className="sp-card">
+                <div className="sp-card-header">
+                  <div>
+                    <div className="section-kicker">TASK S7 / PRIVACY-COMPLIANT AUDIT LOG</div>
+                    <h3>Verification Audit Log</h3>
+                  </div>
+                  <button className="sp-btn-secondary" onClick={loadAuditLog}>
+                    <RefreshCw size={12} /> Refresh Log
+                  </button>
+                </div>
+                <p className="panel-subtitle">
+                  In compliance with GDPR and our Threat Model (Task S1), this audit log records <strong>only</strong> the per-SP pseudonym nullifier, timestamp, and verification status. No date of birth, name, attribute values, salts, or proof bytes are ever stored.
+                </p>
+
+                {spAuditEntries.length > 0 ? (
+                  <table className="audit-table">
+                    <thead>
+                      <tr>
+                        <th>RECEIPT ID</th>
+                        <th>SP ID</th>
+                        <th>PSEUDONYM NULLIFIER</th>
+                        <th>STATUS</th>
+                        <th>TIMESTAMP</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spAuditEntries.map((entry, idx) => (
+                        <tr key={idx}>
+                          <td><code>{entry.receiptId}</code></td>
+                          <td>{entry.spId}</td>
+                          <td><code>{entry.nullifier.slice(0, 16)}...</code></td>
+                          <td>
+                            <span className={entry.accepted ? "badge-verified" : "badge-rejected"}>
+                              {entry.accepted ? "VERIFIED" : "REJECTED"}
+                            </span>
+                          </td>
+                          <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ color: "#77857b", fontSize: "11px", fontStyle: "italic" }}>
+                    No presentations logged yet. When proofs are verified at /api/sp/verify, privacy-safe receipts appear here.
+                  </div>
+                )}
+              </div>
             </section>
-          </section>
+          ) : (
+            /* --- PROOF WORKSPACE VIEW --- */
+            <>
+              <section className="page-intro" id="proof-workspace">
+                <div className="intro-copy">
+                  <div className="eyebrow"><span className="eyebrow-line" />ZERO-KNOWLEDGE DEMONSTRATION</div>
+                  <h1>Prove the claim.<br /><em>Keep the identity.</em></h1>
+                  <p className="intro-description">Show that a KYC requirement is met without handing over the information behind it.</p>
+                </div>
+                <div className="intro-side-note">
+                  <span className="side-note-index">01 / 03</span>
+                  <p>One proof. Two claims.<br />No personal data in the request.</p>
+                  <div className="mini-claims"><span>AGE ≥ 18</span><span>KYC VERIFIED</span></div>
+                </div>
+              </section>
+
+              <div className="prototype-banner">
+                <CircleAlert size={17} />
+                <p><strong>Prototype boundary</strong> The KYC status is currently a simulated private input, not an issuer-signed credential.</p>
+                <a href="#proof-flow">See the flow <ArrowRight size={13} /></a>
+              </div>
+
+              <section className="workspace-grid" aria-label="Proof generation workspace">
+                <form className="panel request-panel" onSubmit={handleSubmit}>
+                  <div className="panel-heading">
+                    <div>
+                      <div className="section-kicker">01 / PRIVATE WITNESS</div>
+                      <h2>Set up a claim</h2>
+                    </div>
+                    <span className="panel-icon"><Fingerprint size={18} /></span>
+                  </div>
+                  <p className="panel-subtitle">These values are used in your browser to build the proof.</p>
+
+                  <label className="field-label" htmlFor="age">Your age <span>PRIVATE</span></label>
+                  <div className="age-input-wrap">
+                    <input id="age" name="age" type="number" min="0" max="255" required value={age} onChange={(event) => setAge(event.target.value)} />
+                    <span>years</span>
+                  </div>
+                  <div className="field-hint"><LockKeyhole size={13} /> Age is not sent to the API.</div>
+
+                  <div className="field-label kyc-label">Credential status <span className="simulated-label">SIMULATED</span></div>
+                  <label className="toggle-row" htmlFor="kyc-verified">
+                    <span className="toggle-copy"><strong>KYC verified</strong><small>Private circuit input for this demo</small></span>
+                    <input id="kyc-verified" type="checkbox" checked={kycVerified} onChange={(event) => setKycVerified(event.target.checked)} />
+                    <span className="toggle-track" aria-hidden="true"><span /></span>
+                  </label>
+
+                  <div className="claim-summary">
+                    <div><span className="summary-dot" /><span>Claim 01</span><strong>Age ≥ 18</strong></div>
+                    <div><span className="summary-dot" /><span>Claim 02</span><strong>KYC verified</strong></div>
+                  </div>
+
+                  {!health.proofReady && (
+                    <div className="setup-hint">
+                      <CircleAlert size={15} />
+                      <span>{health.status === "offline" ? "Start the API, then reload." : "Run npm run setup:demo to create local proving keys."}</span>
+                    </div>
+                  )}
+                  {error && <div className="error-message" role="alert"><CircleAlert size={15} />{error}</div>}
+
+                  <button className="primary-button" type="submit" disabled={!health.proofReady || busy || age === ""}>
+                    {busy ? <><span className="spinner" />Generating proof locally</> : <><Sparkles size={16} />Generate & verify<ArrowRight size={15} /></>}
+                  </button>
+                  <div className="button-footnote"><span className="live-dot" />{health.proofReady ? "Proof setup ready" : "Proof setup not initialized"}</div>
+                </form>
+
+                <section className={`panel receipt-panel ${receipt ? (receipt.accepted ? "accepted" : "not-accepted") : ""}`} aria-live="polite">
+                  <div className="panel-heading">
+                    <div>
+                      <div className="section-kicker">02 / SERVICE PROVIDER</div>
+                      <h2>Verification receipt</h2>
+                    </div>
+                    <span className="panel-icon receipt-icon">{receipt?.accepted ? <CircleCheck size={19} /> : receipt ? <CircleAlert size={19} /> : <ShieldCheck size={19} />}</span>
+                  </div>
+
+                  {!receipt && !busy ? (
+                    <div className="empty-receipt">
+                      <div className="empty-art"><div className="art-ring ring-one" /><div className="art-ring ring-two" /><ShieldCheck size={34} strokeWidth={1.2} /></div>
+                      <h3>Awaiting proof</h3>
+                      <p>When verification completes, the result and public claim signals will appear here.</p>
+                      <div className="empty-state-rule"><span /><span>NO PROOF DATA RECEIVED</span><span /></div>
+                    </div>
+                  ) : busy ? (
+                    <div className="verifying-state">
+                      <span className="large-spinner" />
+                      <h3>Building a proof</h3>
+                      <p>Your witness is being processed locally. No age value leaves this tab.</p>
+                      <div className="progress-track"><span /></div>
+                      <span className="mono progress-caption">GROTH16 · BN128</span>
+                    </div>
+                  ) : (
+                    <div className="receipt-content">
+                      <div className={`receipt-outcome ${receipt.accepted ? "success" : "failure"}`}>
+                        {receipt.accepted ? <CircleCheck size={21} /> : <CircleAlert size={21} />}
+                        <div><strong>{receipt.accepted ? "Claims verified" : receipt.proofValid ? "Proof valid · claim not met" : "Proof rejected"}</strong><span>{receipt.accepted ? "Service provider may proceed" : "The requested condition was not satisfied"}</span></div>
+                      </div>
+                      <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
+                      <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                      <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                      <div className="receipt-metrics">
+                        <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
+                        <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
+                        <div><span>PROOF SIZE</span><strong>{(receipt.proofBytes / 1024).toFixed(2)} <small>KB</small></strong></div>
+                      </div>
+                      <div className="receipt-id"><span>LOCAL RECEIPT ID</span><code>{receipt.receiptId}</code></div>
+                      <button className="reset-button" type="button" onClick={resetDemo}><RotateCcw size={14} />Reset demo</button>
+                    </div>
+                  )}
+                </section>
+              </section>
+            </>
+          )}
 
           <section className="flow-section" id="proof-flow">
             <div className="section-heading-row">
@@ -266,11 +496,11 @@ function App() {
               <div className="team-item"><span className="team-index">P</span><span><strong>Credential design</strong><small>Commitments & selective disclosure</small></span><span className="team-state">IN PROGRESS</span></div>
               <div className="team-item"><span className="team-index">V</span><span><strong>Circuit & claims</strong><small>Age range & KYC status constraints</small></span><span className="team-state state-ready"><Check size={12} /> BASE READY</span></div>
               <div className="team-item"><span className="team-index">D</span><span><strong>Prover pipeline</strong><small>Browser proving & performance</small></span><span className="team-state">IN PROGRESS</span></div>
-              <div className="team-item"><span className="team-index">S</span><span><strong>Verifier & security</strong><small>Public inputs & tamper testing</small></span><span className="team-state">IN PROGRESS</span></div>
+              <div className="team-item"><span className="team-index">S</span><span><strong>Verifier & security</strong><small>Public inputs, anti-replay & attacks</small></span><span className="team-state state-ready"><Check size={12} /> DELIVERED</span></div>
             </div>
           </section>
 
-          <footer className="page-footer"><span>CS670 PROJECT · PRIVACY-PRESERVING DIGITAL KYC</span><span>DEMO ONLY · NO CREDENTIAL ISSUER INTEGRATION</span><a href="#top" aria-label="Back to top"><ArrowDownRight size={15} /></a></footer>
+          <footer className="page-footer"><span>CS670 PROJECT · PRIVACY-PRESERVING DIGITAL KYC</span><span>SOMESHWAR SINGH (231020) · VERIFICATION & SECURITY</span><a href="#top" aria-label="Back to top"><ArrowDownRight size={15} /></a></footer>
         </div>
       </main>
     </div>
