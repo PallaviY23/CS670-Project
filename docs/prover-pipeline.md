@@ -38,7 +38,6 @@ Browser ────────────────────────
 | `src/wallet/` | `createWallet()`: holder secret generated on the device (uniform non-zero BN254 element), encrypted with PBKDF2-SHA256 (600 000 iterations) + AES-256-GCM. Credentials are stored only after the injected `verifyCredential` (credential module) accepts them, and the list view never shows private attributes. Storage is IndexedDB in the browser or in-memory for tests. |
 | `scripts/setup-demo.mjs` | Demo setup using the above; `CIRCUIT=<name>` selects another compiled circuit. |
 | `scripts/bench*.mjs` | Benchmarks (§4). |
-| `.github/workflows/ci.yml` | Tests, setup, web build and a benchmark smoke run on every push; ptau is cached. |
 
 ### Commands
 
@@ -128,7 +127,7 @@ This needs a 2^14 Powers of Tau, which `setupCircuit` selects automatically. Ext
 | D8 wallet view | Partial: the UI shows witness and proof timings and progress. The credential list, consent screen and request inbox need issued credentials (P4/P6) and the request format (S2) |
 | D9 benchmarks | Done (Node and browser) |
 | D10 comparisons | Done (proof systems, Merkle depth, EdDSA cost); re-run on the final circuit |
-| D11 CI | Done |
+| D11 CI | Dropped (course project); run `npm test` locally before pushing |
 | D12 report section | This document |
 
 The draft signal names in `buildPresentationInput` must be checked against the circuit once V1 is frozen, and the following are still needed from other modules:
