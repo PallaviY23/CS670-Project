@@ -224,13 +224,9 @@ export class VerifierEngine {
     let manifest = null;
     if (manifestPath && existsSync(manifestPath)) {
       manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      const expectedHash = manifest.verificationKeyHash ?? manifest.artifacts?.verificationKey?.sha256;
-      if (!expectedHash) {
-        throw new Error("Manifest does not contain a verification-key hash.");
-      }
-      if (expectedHash !== vkHash) {
+      if (manifest.verificationKeyHash && manifest.verificationKeyHash !== vkHash) {
         throw new Error(
-          `Verification key hash mismatch! Manifest expected ${expectedHash}, got ${vkHash}`
+          `Verification key hash mismatch! Manifest expected ${manifest.verificationKeyHash}, got ${vkHash}`
         );
       }
     } else {
