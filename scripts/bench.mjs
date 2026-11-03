@@ -1,19 +1,21 @@
 // Node proving benchmark and proof-system comparison.
 //   node scripts/bench.mjs [--runs 30] [--warmup 3] [--protocols groth16,plonk,fflonk]
-//                          [--circuit kyc_claims] [--input input.json]
-// Requires a compiled circuit in build/circuit (npm run circuit:build).
+//                          [--circuit kyc_presentation] [--input input.json]
+// Requires a compiled circuit in build/circuit (npm run circuit:presentation,
+// or npm run circuit:build for the starter kyc_claims circuit).
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { prove, verify } from "../src/prover/prove.js";
 import { circuitPaths, setupCircuit, terminateCurves } from "../src/prover/setup.js";
+import { defaultBenchInput } from "./lib/presentation-input.mjs";
 import { hostInfo, parseOptions, summarizeSamples, timestamp, writeCsv, writeJson } from "./lib/bench-utils.mjs";
 
 const options = parseOptions({
   runs: { type: "string", default: "30" },
   warmup: { type: "string", default: "3" },
   protocols: { type: "string", default: "groth16" },
-  circuit: { type: "string", default: "kyc_claims" },
+  circuit: { type: "string", default: "kyc_presentation" },
   input: { type: "string" },
 });
 const runs = Number(options.runs);
@@ -23,14 +25,14 @@ const { circuit } = options;
 
 const { r1csPath, wasmPath } = circuitPaths(circuit, resolve("build/circuit"));
 if (!existsSync(r1csPath) || !existsSync(wasmPath)) {
-  console.error(`No compiled ${circuit} circuit in build/circuit. Run npm run circuit:build first.`);
+  console.error(`No compiled ${circuit} circuit in build/circuit. Run npm run circuit:presentation first.`);
   process.exit(1);
 }
-if (!options.input && circuit !== "kyc_claims") {
+const input = options.input ? JSON.parse(await readFile(options.input, "utf8")) : await defaultBenchInput(circuit);
+if (!input) {
   console.error("Pass --input <file.json> with a valid witness input for this circuit.");
   process.exit(1);
 }
-const input = options.input ? JSON.parse(await readFile(options.input, "utf8")) : { age: 21, kycVerified: 1 };
 const wasm = new Uint8Array(await readFile(wasmPath));
 
 const results = [];

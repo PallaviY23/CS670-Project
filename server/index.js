@@ -160,7 +160,13 @@ app.post("/api/verify", (_request, response) => {
 
 // --- Service Provider Verifier API (Tasks S4 & S5) ---
 
-app.post("/api/demo/issue", async (request, response) => {
+// --- KYC Authority (issuer) API (Tasks P3 & P6) ---
+
+app.get("/api/issuer/key", (_request, response) => {
+  response.json({ publicKey: demoIssuerKeyPair.publicKey, scheme: "EdDSA-Poseidon / BabyJubJub" });
+});
+
+async function issueDemoCredential(request, response) {
   if (process.env.NODE_ENV === "production") {
     response.sendStatus(404);
     return;
@@ -199,7 +205,11 @@ app.post("/api/demo/issue", async (request, response) => {
   } catch (error) {
     response.status(400).json({ error: error.message });
   }
-});
+}
+
+// Mock KYC check: the demo issuer accepts the submitted DOB as verified.
+app.post("/api/issuer/issue", issueDemoCredential);
+app.post("/api/demo/issue", issueDemoCredential);
 
 // S4: Challenge Service
 app.post("/api/sp/request", (request, response) => {

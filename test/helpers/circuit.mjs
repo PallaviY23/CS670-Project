@@ -40,6 +40,9 @@ export async function loadCircuit(file) {
 }
 
 async function compileCircuit(file, name, dir) {
+  // Start from an empty output folder: circom2 (WASI) on Windows can hang
+  // when overwriting a previous build.
+  fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   const source = path.resolve(ROOT, file);
   const relative = (target) => path.relative(CIRCUITS, target).split(path.sep).join("/");

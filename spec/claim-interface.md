@@ -139,4 +139,4 @@ The merged demo uses revocation depth 16 and builds the presentation circuit wit
 
 `src/credential/presentation-credential.mjs` implements this circuit's eight-slot format, root-only EdDSA-Poseidon signature, and `Poseidon(slot, value, salt)` leaf hashing. The earlier `src/credential/credential.mjs` two-attribute selective-disclosure API remains as a standalone first prototype and is not used by the browser demo.
 
-The website's `/api/demo/issue` endpoint is only for local demonstration. It is not a trusted external issuer service and must be disabled/replaced for deployment.
+The website's `/api/issuer/issue` endpoint (alias `/api/demo/issue`) is only for local demonstration. The stored JSON format and disclosure policy are in [credential-format.md](credential-format.md). It is not a trusted external issuer service and must be disabled/replaced for deployment.

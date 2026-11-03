@@ -105,6 +105,8 @@ export class RevocationRegistry {
           leaf: this.leaves.get(existingIdx).toString(),
         };
       }
+      // Revocation is final: re-registering must not revive a revoked ID.
+      throw new Error(`Credential ${idStr} was revoked and cannot be re-registered.`);
     }
 
     const index = this.nextIndex;

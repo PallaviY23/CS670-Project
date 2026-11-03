@@ -119,18 +119,15 @@ This estimate predates the merged whole-tree optimization. The current circuit c
 | --- | --- |
 | D1 ptau sizing, caching, zkey verification | Done |
 | D2 build manifest | Done; served at `/api/prover/manifest` |
-| D3 witness-input builder | Starter circuit: done and used by the UI. Presentation circuit: implemented and tested against the draft signal contract, waiting for the frozen `spec/claim-interface.md` (V1) and the credential library's Merkle-path function (P2) |
+| D3 witness-input builder | Done; matches the frozen `KycPresentation` interface (V1) and is used by the UI. `test/presentation-credential.test.mjs` checks it against the compiled circuit |
 | D4 timed `prove()` / `verify()` | Done |
-| D5 cached, hash-checked browser artifacts | Done |
+| D5 cached, hash-checked browser artifacts | Done; the verifier also pins the verification-key hash from the manifest at start-up |
 | D6 Web Worker proving | Done; the UI uses it |
-| D7 wallet storage | Done; waiting for `verifyCredential` (P5) to be passed in |
-| D8 wallet view | Partial: the UI shows witness and proof timings and progress. The credential list, consent screen and request inbox need issued credentials (P4/P6) and the request format (S2) |
-| D9 benchmarks | Done (Node and browser) |
-| D10 comparisons | Done (proof systems, Merkle depth, EdDSA cost); re-run on the final circuit |
+| D7 wallet storage | Done; uses `verifyCredential` (P5) on issue and import, with export/import in the UI |
+| D8 wallet view | Done: wallet unlock, issued credential, consent screen with the disclosure policy (P7), proof progress, receipt with nullifier and public signals, network inspector (A4) |
+| D9 benchmarks | Done (Node and browser), re-run on the final circuit (§4.1) |
+| D10 comparisons | Done (proof systems, Merkle depth, EdDSA cost) |
 | D11 CI | Dropped (course project); run `npm test` locally before pushing |
 | D12 report section | This document |
 
-The draft signal names in `buildPresentationInput` must be checked against the circuit once V1 is frozen, and the following are still needed from other modules:
-- `openSlot(credential, slot)` from the credential library;
-- the revocation path endpoint (S6);
-- the request format (S2).
+End-to-end coverage with real proofs is in `test/e2e.test.mjs`: issue → wallet → input → Groth16 → verifier, then replay, tampered signals, a different verification key, and revocation. It also asserts that the submitted presentation contains no DOB, salt, credential ID or holder secret.

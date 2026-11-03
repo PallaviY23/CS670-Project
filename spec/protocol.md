@@ -235,19 +235,35 @@ The `publicSignals` array MUST contain exactly 8 elements in this deterministic 
 }
 ```
 
-### 3.4 Revoke Credential (Authorized Issuer Endpoint)
-`POST /api/revocation/revoke`
+### 3.4 Revoke Credential (Issuer Endpoint)
+`POST /api/revocation/revoke` (disabled when `NODE_ENV=production`; the demo has no issuer authentication, and a deployment must add it)
 ```json
 {
-  "credentialId": "10042",
-  "authSignature": "..."
+  "credentialId": "10042"
 }
 ```
 Response:
 ```json
 {
   "success": true,
-  "revokedCredentialId": "10042",
-  "newRevocationRoot": "119284729104829104820194820194820194820194820194820194820194820194"
+  "alreadyRevoked": false,
+  "revokedId": "10042",
+  "newRoot": "1192847291048291048201948201948201948201948201948201948201948201"
 }
 ```
+Revocation is final: `POST /api/revocation/register` refuses to re-register a revoked ID.
+
+## 4. Issuer (KYC Authority) Endpoints
+
+### 4.1 Issuer Public Key
+`GET /api/issuer/key`
+```json
+{ "publicKey": { "Ax": "<field>", "Ay": "<field>" }, "scheme": "EdDSA-Poseidon / BabyJubJub" }
+```
+
+### 4.2 Issue Credential (mock KYC)
+`POST /api/issuer/issue` (alias `/api/demo/issue`; disabled when `NODE_ENV=production`)
+```json
+{ "dob": 20000615, "holderCommitment": "<Poseidon(holderSecret)>" }
+```
+Response `201`: `{ "credential": <credential JSON, see spec/credential-format.md>, "revocationRoot": "<new active-set root>" }`. The issuer accepts the submitted date of birth as KYC-verified (mock), assigns a random `credentialId`, sets expiry ten years ahead, and registers the ID in the active-credential tree.

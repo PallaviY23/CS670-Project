@@ -76,4 +76,9 @@ test("RevocationRegistry revokes credential, updates root, and denies path", asy
     current = reg.hash([left, right]);
   }
   assert.equal(current.toString(), rootAfter);
+
+  // Revocation is final: registering the same ID again must not revive it.
+  assert.throws(() => reg.register("1001"), /cannot be re-registered/);
+  assert.equal(reg.isActive("1001"), false);
+  assert.equal(reg.getRoot(), rootAfter);
 });

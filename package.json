@@ -20,7 +20,8 @@
     "bench:browser": "node scripts/bench-browser.mjs",
     "circuit:presentation": "node scripts/compile.mjs",
     "circuit:constraints": "node scripts/constraints.mjs",
-    "test:circuit": "node --test --test-concurrency=1 test/subtemplates.test.mjs test/presentation.test.mjs"
+    "test:circuit": "node --test --test-concurrency=1 test/subtemplates.test.mjs test/presentation.test.mjs test/ablation.test.mjs",
+    "test:e2e": "node --test test/e2e.test.mjs"
   },
   "dependencies": {
     "circomlib": "^2.0.5",
