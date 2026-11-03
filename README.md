@@ -26,15 +26,27 @@ npm run setup:demo
 npm run dev
 ```
 
-Open `http://localhost:5173`. The first setup creates a local development-only ceremony; do not use its keys for production. Proofs are generated in the browser. The API receives only the proof and public outputs and does not store them.
+Open `http://localhost:5173`. The first setup creates a local development-only Powers of Tau (cached in `build/ptau/`, so later setups only regenerate the proving key); do not use its keys for production. Set `PTAU_FILE` to use an external ceremony file instead. Setup checks the proving key against the circuit and writes `build/circuit/manifest.json` with the constraint count, public signal order and artifact hashes. Proofs are generated in a browser Web Worker from hash-checked, cached artifacts. The API receives only the proof and public outputs and does not store them.
 
 Re-run `npm run setup:demo` after `npm test` or any circuit rebuild because rebuilding clears keys that could otherwise be stale.
+
+## Benchmarks
+
+```powershell
+npm run bench               # Node proving/verification, Groth16
+npm run bench:compare       # Groth16 vs PLONK vs FFLONK
+npm run bench:components    # cost of Merkle depth and EdDSA signature checks
+npm run bench:browser       # headless Chrome/Edge (needs setup:demo)
+```
+
+Results are written to `build/bench/` (JSON and CSV). See [docs/prover-pipeline.md](docs/prover-pipeline.md) for results.
 
 ## Work Areas
 
 - `src/credential/`: issuer-signed Poseidon/Merkle credentials and selective presentations (Pallavi)
 - `circuits/`: age and KYC claim constraints and circuit tests (Vaishnavi)
-- `src/prover/`: witness/proof generation and proving performance (Durbasmriti)
+- `src/prover/`: trusted setup, witness/proof generation, browser proving and proving performance (Durbasmriti)
+- `src/wallet/`: encrypted holder secret and credential storage (Durbasmriti)
 - `src/verifier/`: proof/public-input verification and security tests (Someshwar)
 - `web/`: interactive proof workspace
 - `server/`: health, proof artifact, and verification endpoints
