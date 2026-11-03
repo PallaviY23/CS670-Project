@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import {
   VerifierEngine,
   ChallengeStore,
@@ -9,6 +9,7 @@ import {
   generateRandomFieldElement,
 } from "../src/verifier/index.js";
 import { RevocationRegistry } from "../src/verifier/revocation.js";
+import { terminateCurves } from "../src/prover/setup.js";
 
 const DUMMY_VK = {
   protocol: "groth16",
@@ -28,6 +29,10 @@ const TRUSTED_ISSUER = {
 };
 
 const SP_ID = "123456789";
+
+after(async () => {
+  await terminateCurves();
+});
 
 async function setupEngine() {
   const challengeStore = new ChallengeStore();
@@ -240,8 +245,13 @@ test("Attack 6 & 7: Rejects unknown, expired, or replayed challenges", async () 
   const replayedSignals = [...fakeSignals];
   replayedSignals[5] = freshCh.challenge;
 
-  // First consumption: fails at Snark verify because dummy VK doesn't match dummy proof, but challenge IS consumed
-  await engine.verifyPresentation({ proof, publicSignals: replayedSignals });
+  // Invalid proof submissions must not consume the challenge.
+  const invalidProof = await engine.verifyPresentation({ proof, publicSignals: replayedSignals });
+  assert.equal(invalidProof.code, "INVALID_PROOF");
+  assert.equal(challengeStore.lookup(freshCh.challenge).valid, true);
+
+  // Simulate a successful verification consuming the single-use request.
+  challengeStore.consume(freshCh.challenge);
 
   // Second submission with exact same challenge MUST be rejected as replayed
   const resReplay = await engine.verifyPresentation({

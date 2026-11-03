@@ -1,5 +1,6 @@
-import crypto from "node:crypto";
 import { buildPoseidon } from "circomlibjs";
+
+const FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
 /**
  * PoseidonMerkleTree
@@ -62,14 +63,17 @@ export class RevocationRegistry {
    * matches Poseidon(1) in RevocationMembership.circom
    */
   hashLeaf(credentialId) {
-    let idBigInt;
-    try {
-      idBigInt = BigInt(credentialId);
-    } catch {
-      const digest = crypto.createHash("sha256").update(String(credentialId)).digest("hex");
-      idBigInt = BigInt(`0x${digest}`) % 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+    return this.hash([BigInt(this.normalizeCredentialId(credentialId))]);
+  }
+
+  normalizeCredentialId(credentialId) {
+    const id = String(credentialId);
+    if (!/^(0|[1-9]\d*)$/.test(id)) {
+      throw new TypeError("credentialId must be a canonical decimal field element.");
     }
-    return this.hash([idBigInt]);
+    const value = BigInt(id);
+    if (value >= FIELD_MODULUS) throw new RangeError("credentialId is outside the BN254 scalar field.");
+    return value.toString();
   }
 
   recordRoot(root) {
@@ -90,7 +94,7 @@ export class RevocationRegistry {
    * @returns {{ index: number, root: string, leaf: string }}
    */
   register(credentialId) {
-    const idStr = String(credentialId);
+    const idStr = this.normalizeCredentialId(credentialId);
     if (this.credentialToIndex.has(idStr)) {
       const existingIdx = this.credentialToIndex.get(idStr);
       // Already registered and active
@@ -130,7 +134,7 @@ export class RevocationRegistry {
    * @returns {{ success: boolean, revokedId: string, newRoot: string }}
    */
   revoke(credentialId) {
-    const idStr = String(credentialId);
+    const idStr = this.normalizeCredentialId(credentialId);
     if (!this.credentialToIndex.has(idStr)) {
       throw new Error(`Credential ${idStr} is not registered in the revocation tree.`);
     }
@@ -165,7 +169,7 @@ export class RevocationRegistry {
    * @returns {boolean}
    */
   isActive(credentialId) {
-    const idStr = String(credentialId);
+    const idStr = this.normalizeCredentialId(credentialId);
     const index = this.credentialToIndex.get(idStr);
     return index !== undefined && this.leaves.has(index);
   }
@@ -176,7 +180,7 @@ export class RevocationRegistry {
    * @returns {{ root: string, leaf: string, pathElements: string[], pathIndices: number[] }}
    */
   getMembershipPath(credentialId) {
-    const idStr = String(credentialId);
+    const idStr = this.normalizeCredentialId(credentialId);
     if (!this.isActive(idStr)) {
       throw new Error(`Credential ${idStr} is revoked or not found in active registry.`);
     }

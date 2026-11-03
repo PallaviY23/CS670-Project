@@ -102,12 +102,13 @@ function requireFields(object, fields, code, label) {
 }
 
 function merklePath(path, depth, label) {
-  if (!Array.isArray(path?.siblings) || !Array.isArray(path?.pathIndices)
-    || path.siblings.length !== depth || path.pathIndices.length !== depth) {
+  const siblings = path?.siblings ?? path?.pathElements;
+  if (!Array.isArray(siblings) || !Array.isArray(path?.pathIndices)
+    || siblings.length !== depth || path.pathIndices.length !== depth) {
     fail("INVALID_MERKLE_PATH", `${label} must have ${depth} siblings and path indices.`);
   }
   return {
-    siblings: path.siblings.map((value, i) => toFieldElement(value, `${label} sibling ${i}`).toString()),
+    siblings: siblings.map((value, i) => toFieldElement(value, `${label} sibling ${i}`).toString()),
     pathIndices: path.pathIndices.map((bit, i) => {
       if (bit !== 0 && bit !== 1 && bit !== "0" && bit !== "1") {
         fail("INVALID_MERKLE_PATH", `${label} path index ${i} must be 0 or 1.`);
@@ -118,45 +119,48 @@ function merklePath(path, depth, label) {
 }
 
 function sameKey(a, b) {
-  return toFieldElement(a.Ax, "issuer Ax") === toFieldElement(b.Ax, "issuer Ax")
-    && toFieldElement(a.Ay, "issuer Ay") === toFieldElement(b.Ay, "issuer Ay");
+  return toFieldElement(a.Ax ?? a.ax, "issuer Ax") === toFieldElement(b.Ax ?? b.ax, "issuer Ax")
+    && toFieldElement(a.Ay ?? a.ay, "issuer Ay") === toFieldElement(b.Ay ?? b.ay, "issuer Ay");
 }
 
 /**
- * @param credential   Stored credential: { issuer:{Ax,Ay}, attributes, salts, root, signature:{R8x,R8y,S} }
+ * @param credential   Stored 8-slot credential with signed Merkle root and leaf hashes.
  * @param options.holderSecret   Unlocked wallet secret.
- * @param options.request        Service Provider request: { spId, challenge, currentDate, issuer:{Ax,Ay},
- *                               minAgeYears?, acceptedRevocationRoots, expiresAt? }
- * @param options.openSlot       (credential, slotName) => { siblings, pathIndices } from the credential library.
- * @param options.revocationPath { root, siblings, pathIndices } for credentialId, from the revocation registry.
+ * @param options.request        Service Provider request: { spId, challenge, currentDate, trustedIssuer,
+ *                               minAgeOffset, acceptedRevocationRoots, expiresAt? }
+ * @param options.revocationPath { root, pathElements, pathIndices } for credentialId.
  * @param options.now            Clock override for tests.
  */
-export function buildPresentationInput(credential, { holderSecret, request, openSlot, revocationPath, now = Date.now() }) {
+export function buildPresentationInput(credential, { holderSecret, request, revocationPath, now = Date.now() }) {
   requireFields(credential, ["issuer", "attributes", "salts", "root", "signature"], "MALFORMED_CREDENTIAL", "Credential");
   requireFields(credential.attributes, OPENED_SLOTS.filter((slot) => slot !== "holderCommitment"), "MALFORMED_CREDENTIAL", "Credential attributes");
   requireFields(credential.salts, OPENED_SLOTS, "MALFORMED_CREDENTIAL", "Credential salts");
   requireFields(credential.signature, ["R8x", "R8y", "S"], "MALFORMED_CREDENTIAL", "Credential signature");
-  requireFields(request, ["spId", "challenge", "currentDate", "issuer", "acceptedRevocationRoots"], "MALFORMED_REQUEST", "Proof request");
-  if (typeof openSlot !== "function") fail("MISSING_MERKLE_PROVIDER", "A credential Merkle path provider is required.");
+  requireFields(request, ["spId", "challenge", "currentDate", "acceptedRevocationRoots"], "MALFORMED_REQUEST", "Proof request");
+  if (!Array.isArray(credential.leaves) || credential.leaves.length !== 8) {
+    fail("MALFORMED_CREDENTIAL", "Credential must contain all 8 Merkle leaf hashes.");
+  }
+  const trustedIssuer = request.trustedIssuer ?? request.issuer;
+  if (!trustedIssuer) fail("MALFORMED_REQUEST", "Proof request is missing its trusted issuer key.");
 
   if (request.expiresAt !== undefined && new Date(request.expiresAt).getTime() < now) {
     fail("REQUEST_EXPIRED", "This proof request has expired. Ask the service for a new one.");
   }
-  if (!sameKey(credential.issuer, request.issuer)) {
+  if (!sameKey(credential.issuer, trustedIssuer)) {
     fail("ISSUER_MISMATCH", "This credential was not issued by the authority the service trusts.");
   }
 
   const currentDate = dateField(request.currentDate, "Request date");
   const dob = dateField(credential.attributes.dob, "Date of birth");
   const expiry = dateField(credential.attributes.expiry, "Credential expiry");
-  const minAgeYears = request.minAgeYears ?? 18;
-  if (!Number.isInteger(minAgeYears) || minAgeYears < 0 || minAgeYears > 150) {
+  const minAgeOffset = request.minAgeOffset ?? (request.minAgeYears ?? 18) * 10000;
+  if (!Number.isSafeInteger(Number(minAgeOffset)) || Number(minAgeOffset) < 0 || Number(minAgeOffset) > 0xffffffff) {
     fail("MALFORMED_REQUEST", "Requested minimum age is not valid.");
   }
 
   if (expiry < currentDate) fail("CREDENTIAL_EXPIRED", "This credential has expired.");
-  if (!meetsMinimumAge(dob, currentDate, minAgeYears)) {
-    fail("UNDERAGE", `The credential does not satisfy age >= ${minAgeYears}.`);
+  if (currentDate - dob < Number(minAgeOffset)) {
+    fail("UNDERAGE", `The credential does not satisfy the requested minimum age offset of ${minAgeOffset}.`);
   }
   if (String(credential.attributes.kycStatus) !== "1") fail("KYC_NOT_VERIFIED", "The credential's KYC status is not verified.");
 
@@ -166,16 +170,19 @@ export function buildPresentationInput(credential, { holderSecret, request, open
 
   if (!revocationPath) fail("MISSING_REVOCATION_PATH", "Fetch a revocation membership path from the issuer first.");
   const revocationRoot = toFieldElement(revocationPath.root, "Revocation root");
+  if (!Array.isArray(request.acceptedRevocationRoots)) {
+    fail("MALFORMED_REQUEST", "Accepted revocation roots must be an array.");
+  }
   const acceptedRoots = request.acceptedRevocationRoots.map((root) => toFieldElement(root, "Accepted revocation root"));
   if (!acceptedRoots.includes(revocationRoot)) {
     fail("STALE_REVOCATION_ROOT", "The revocation path is not against a root this service accepts; refresh it.");
   }
-  if (!Array.isArray(revocationPath.siblings) || revocationPath.siblings.length === 0) {
+  const revocationSiblings = revocationPath.siblings ?? revocationPath.pathElements;
+  if (!Array.isArray(revocationSiblings) || revocationSiblings.length === 0) {
     fail("INVALID_MERKLE_PATH", "Revocation path has no siblings.");
   }
-  const revocation = merklePath(revocationPath, revocationPath.siblings.length, "Revocation path");
-
-  const openings = OPENED_SLOTS.map((slot) => merklePath(openSlot(credential, slot), CREDENTIAL_TREE_DEPTH, `Credential ${slot} path`));
+  const revocation = merklePath(revocationPath, revocationSiblings.length, "Revocation path");
+  const leaves = credential.leaves.map((leaf, index) => toFieldElement(leaf, `Credential leaf ${index}`).toString());
 
   return {
     // Private
@@ -185,19 +192,17 @@ export function buildPresentationInput(credential, { holderSecret, request, open
     expiry: String(expiry),
     holderSecret: secret.toString(),
     salts: OPENED_SLOTS.map((slot) => toFieldElement(credential.salts[slot], `${slot} salt`).toString()),
-    siblings: openings.map((opening) => opening.siblings),
-    pathIndices: openings.map((opening) => opening.pathIndices),
-    credentialRoot: toFieldElement(credential.root, "Credential root").toString(),
+    otherLeaves: leaves.slice(5, 8),
     sigR8x: toFieldElement(credential.signature.R8x, "Signature R8x").toString(),
     sigR8y: toFieldElement(credential.signature.R8y, "Signature R8y").toString(),
     sigS: toFieldElement(credential.signature.S, "Signature S").toString(),
-    revocationSiblings: revocation.siblings,
-    revocationPathIndices: revocation.pathIndices,
+    revSiblings: revocation.siblings,
+    revPathIndices: revocation.pathIndices,
     // Public
-    issuerAx: toFieldElement(request.issuer.Ax, "issuer Ax").toString(),
-    issuerAy: toFieldElement(request.issuer.Ay, "issuer Ay").toString(),
+    issuerAx: toFieldElement(trustedIssuer.Ax ?? trustedIssuer.ax, "issuer Ax").toString(),
+    issuerAy: toFieldElement(trustedIssuer.Ay ?? trustedIssuer.ay, "issuer Ay").toString(),
     currentDate: String(currentDate),
-    minAgeOffset: String(minAgeYears * 10000),
+    minAgeOffset: String(minAgeOffset),
     challenge: toFieldElement(request.challenge, "Challenge").toString(),
     spId: toFieldElement(request.spId, "spId").toString(),
     revocationRoot: revocationRoot.toString(),

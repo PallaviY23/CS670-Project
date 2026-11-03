@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { circuitPaths, setupCircuit, terminateCurves, writeManifest } from "../src/prover/setup.js";
 
-const circuit = process.env.CIRCUIT ?? "kyc_claims";
+const circuit = process.env.CIRCUIT ?? "kyc_presentation";
 const circuitDir = resolve("build/circuit");
 const { r1csPath, wasmPath, symPath } = circuitPaths(circuit, circuitDir);
 const zkeyPath = resolve(circuitDir, `${circuit}_final.zkey`);

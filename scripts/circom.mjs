@@ -20,9 +20,9 @@ export function circomCmd() {
   return cached;
 }
 
-export function runCircom(args) {
+export function runCircom(args, options = {}) {
   try {
-    return execSync(`${circomCmd()} ${args}`, { stdio: "pipe" }).toString().replace(/\x1b\[[0-9;]*m/g, "");
+    return execSync(`${circomCmd()} ${args}`, { stdio: "pipe", ...options }).toString().replace(/\x1b\[[0-9;]*m/g, "");
   } catch (e) {
     const clean = (b) => (b ? b.toString().replace(/\x1b\[[0-9;]*m/g, "") : "");
     throw new Error(`circom failed (${circomCmd()} ${args}):\n${clean(e.stdout)}${clean(e.stderr)}`);

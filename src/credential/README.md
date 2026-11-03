@@ -1,14 +1,24 @@
 # Credential Module
 
-Owner: Reddi Pallavi
+The original `credential.mjs` contains the first two-attribute prototype and its selective-disclosure API. The browser demo now uses `presentation-credential.mjs`, whose format matches `circuits/kyc_presentation.circom`.
 
-The module in `credential.mjs` provides a first credential prototype:
+The presentation credential has eight ordered slots:
 
-- The issuer signs a Poseidon hash over the credential commitment and metadata using EdDSA-Poseidon.
-- `age` and `kycVerified` each have an independently salted Poseidon leaf in a two-leaf Merkle commitment.
-- A wallet can create a presentation that reveals only selected attributes and their inclusion paths.
-- A verifier checks the issuer against a trusted public key, the signature, expiry, and each disclosed Merkle path.
+1. `credentialId`
+2. `dob`
+3. `kycStatus`
+4. `expiry`
+5. `holderCommitment`
+6. `nationality`
+7. `issuedAt`
+8. `reserved`
 
-Run the credential tests with `node --test test/credential.test.mjs`.
+Each leaf is `Poseidon(slot, value, salt)`, internal nodes are `Poseidon(left, right)`, and the issuer signs the root with EdDSA-Poseidon. The wallet verifies the whole credential against the configured issuer before storing it. The circuit recomputes slots 0–4 from private values, uses the stored hashes for slots 5–7, and checks the signature and active-set membership without disclosing the DOB.
 
-This module is not yet bound to `circuits/kyc_claims.circom`. Attribute disclosure reveals the selected value; proving `age >= 18` without revealing age still requires the circuit owner to add commitment membership and issuer-signature verification. KYC status is a Boolean claim only, not a credential-revocation mechanism. See `spec/claim-interface.md` before integrating signal changes.
+`issueCredential()` is used by the local development-only issuer. Its key is stored under the ignored `build/` directory; it is not a production issuer and does not perform identity checks. `createHolderCommitment()` and `openCredentialSlot()` share the same hashing rules with the circuit.
+
+Run credential and integration coverage with:
+
+```powershell
+node --test test/credential.test.mjs test/presentation-credential.test.mjs
+```

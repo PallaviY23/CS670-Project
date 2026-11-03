@@ -1,20 +1,32 @@
 import express from "express";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as snarkjs from "snarkjs";
-import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { VerifierEngine, ChallengeStore, AuditLog } from "../src/verifier/index.js";
+import {
+  VerifierEngine,
+  ChallengeStore,
+  AuditLog,
+  generateRandomFieldElement,
+  isCanonicalFieldElement,
+} from "../src/verifier/index.js";
 import { getDefaultRegistry } from "../src/verifier/revocation.js";
+import {
+  generateIssuerKeyPair,
+  issuerKeyPairFromPrivateKey,
+  issueCredential,
+} from "../src/credential/presentation-credential.mjs";
+import { isValidDateInt } from "../src/prover/inputs.js";
 
 const app = express();
 const circuitDir = resolve("build/circuit");
-const wasmPath = resolve(circuitDir, "kyc_claims_js/kyc_claims.wasm");
-const zkeyPath = resolve(circuitDir, "kyc_claims_final.zkey");
+const wasmPath = resolve(circuitDir, "kyc_presentation_js/kyc_presentation.wasm");
+const zkeyPath = resolve(circuitDir, "kyc_presentation_final.zkey");
 const verificationKeyPath = resolve(circuitDir, "verification_key.json");
 const manifestPath = resolve(circuitDir, "manifest.json");
+const serviceProviderId = "123456789";
+const minimumAgeOffset = 180000;
 
 // Security Hardening (Task S8)
 app.disable("x-powered-by");
@@ -30,7 +42,6 @@ app.use(
     crossOriginEmbedderPolicy: false,
   })
 );
-app.use(cors());
 app.use(express.json({ limit: "256kb" }));
 
 // Rate limiting (Task S8)
@@ -48,28 +59,59 @@ const challengeStore = new ChallengeStore();
 const auditLog = new AuditLog();
 let revocationRegistry = null;
 let verifierEngine = null;
+const issuerKeyPath = resolve("build/demo-issuer-key.json");
+
+async function loadDemoIssuerKeyPair() {
+  mkdirSync(resolve("build"), { recursive: true });
+  if (existsSync(issuerKeyPath)) {
+    const stored = JSON.parse(readFileSync(issuerKeyPath, "utf8"));
+    return issuerKeyPairFromPrivateKey(stored.privateKey);
+  }
+  const generated = await generateIssuerKeyPair();
+  try {
+    writeFileSync(issuerKeyPath, JSON.stringify({ privateKey: generated.privateKey }), { flag: "wx", mode: 0o600 });
+    return generated;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const stored = JSON.parse(readFileSync(issuerKeyPath, "utf8"));
+    return issuerKeyPairFromPrivateKey(stored.privateKey);
+  }
+}
+
+const demoIssuerKeyPair = await loadDemoIssuerKeyPair();
 
 // Initialize registry and verifier engine
 async function initVerifier() {
   revocationRegistry = await getDefaultRegistry(16);
 
   let verificationKey = null;
-  if (existsSync(verificationKeyPath)) {
-    try {
-      const loaded = VerifierEngine.loadArtifacts({ verificationKeyPath, manifestPath });
-      verificationKey = loaded.verificationKey;
-    } catch (err) {
-      console.warn("Warning loading verification key / manifest:", err.message);
-      verificationKey = JSON.parse(readFileSync(verificationKeyPath, "utf8"));
+  if (existsSync(verificationKeyPath) && existsSync(manifestPath)) {
+    const loaded = VerifierEngine.loadArtifacts({ verificationKeyPath, manifestPath });
+    if (loaded.manifest?.circuit !== "kyc_presentation") {
+      throw new Error("Verifier artifacts were not generated for the credential-bound presentation circuit.");
     }
+    const expectedSignals = [
+      "nullifier",
+      "issuerAx",
+      "issuerAy",
+      "currentDate",
+      "minAgeOffset",
+      "challenge",
+      "spId",
+      "revocationRoot",
+    ];
+    if (JSON.stringify(loaded.manifest.publicSignals) !== JSON.stringify(expectedSignals)) {
+      throw new Error("Verifier public-signal order does not match the presentation interface.");
+    }
+    verificationKey = loaded.verificationKey;
   }
 
   verifierEngine = new VerifierEngine({
     verificationKey,
-    spId: "123456789",
+    spId: serviceProviderId,
     trustedIssuerKey: {
-      ax: "11513271168449174522649033324628286280208269784305886616238612196620584742680",
-      ay: "4525892543290680321743110595304724213031024621041926618587428172605809756083",
+      ax: demoIssuerKeyPair.publicKey.Ax,
+      ay: demoIssuerKeyPair.publicKey.Ay,
     },
     challengeStore,
     auditLog,
@@ -100,6 +142,9 @@ app.get("/api/health", (_request, response) => {
     proofReady: isProofReady(),
     verifier: "Groth16 / bn128",
     revocationRoot: revocationRegistry ? revocationRegistry.getRoot() : null,
+    trustedIssuer: demoIssuerKeyPair.publicKey,
+    serviceProviderId,
+    minimumAgeOffset,
   });
 });
 
@@ -107,49 +152,62 @@ app.get("/api/prover/manifest", sendArtifact(manifestPath));
 app.get("/api/prover/wasm", sendArtifact(wasmPath));
 app.get("/api/prover/zkey", sendArtifact(zkeyPath));
 
-// Backward-compatible starter verify endpoint
-app.post("/api/verify", async (request, response) => {
-  const { proof, publicSignals } = request.body ?? {};
-  const validSignals = Array.isArray(publicSignals)
-    && publicSignals.length === 2
-    && publicSignals.every((signal) => ["0", "1"].includes(String(signal)));
-
-  if (!proof || typeof proof !== "object" || !validSignals) {
-    response.status(400).json({ error: "Expected a proof and two boolean public signals." });
-    return;
-  }
-
-  if (!isProofReady()) {
-    response.status(503).json({ error: "Run npm run setup:demo first." });
-    return;
-  }
-
-  const startedAt = performance.now();
-
-  try {
-    const verificationKey = JSON.parse(readFileSync(verificationKeyPath, "utf8"));
-    const proofValid = await snarkjs.groth16.verify(verificationKey, publicSignals, proof);
-    const claims = {
-      ageAtLeast18: String(publicSignals[0]) === "1",
-      kycVerified: String(publicSignals[1]) === "1",
-    };
-
-    response.json({
-      proofValid,
-      accepted: proofValid && claims.ageAtLeast18 && claims.kycVerified,
-      claims,
-      verificationMs: Number((performance.now() - startedAt).toFixed(2)),
-    });
-  } catch {
-    response.status(400).json({ error: "The proof could not be verified." });
-  }
+app.post("/api/verify", (_request, response) => {
+  response.status(410).json({
+    error: "The starter age/KYC circuit is retired. Request a presentation with POST /api/sp/request.",
+  });
 });
 
 // --- Service Provider Verifier API (Tasks S4 & S5) ---
 
+app.post("/api/demo/issue", async (request, response) => {
+  if (process.env.NODE_ENV === "production") {
+    response.sendStatus(404);
+    return;
+  }
+  const dob = Number(request.body?.dob);
+  const holderCommitment = request.body?.holderCommitment;
+  const currentDate = Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
+  if (!isValidDateInt(dob) || dob > currentDate) {
+    response.status(400).json({ error: "dob must be a valid past date in YYYYMMDD form." });
+    return;
+  }
+  if (!isCanonicalFieldElement(holderCommitment) || String(holderCommitment) === "0") {
+    response.status(400).json({ error: "holderCommitment must be a non-zero canonical field element." });
+    return;
+  }
+
+  try {
+    const issuedAt = currentDate;
+    const year = Math.floor(currentDate / 10000) + 10;
+    const month = Math.floor(currentDate / 100) % 100;
+    const day = currentDate % 100;
+    const expiry = year * 10000 + month * 100 + Math.min(day, month === 2 ? 28 : 31);
+    const credentialId = generateRandomFieldElement();
+    const credential = await issueCredential({
+      credentialId,
+      dob,
+      kycStatus: 1,
+      expiry,
+      holderCommitment,
+      nationality: 840,
+      issuedAt,
+      issuerPrivateKey: demoIssuerKeyPair.privateKey,
+    });
+    const registration = revocationRegistry.register(credentialId);
+    response.status(201).json({ credential, revocationRoot: registration.root });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
 // S4: Challenge Service
 app.post("/api/sp/request", (request, response) => {
-  const { spId = "123456789", minAgeOffset = 180000 } = request.body ?? {};
+  const { spId = serviceProviderId, minAgeOffset = minimumAgeOffset } = request.body ?? {};
+  if (String(spId) !== serviceProviderId || Number(minAgeOffset) !== minimumAgeOffset) {
+    response.status(400).json({ error: "This demo issues requests for its fixed service provider and age policy." });
+    return;
+  }
   const currentDate = Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
 
   const record = challengeStore.issue({
@@ -157,7 +215,7 @@ app.post("/api/sp/request", (request, response) => {
     currentDate,
     minAgeOffset,
     trustedIssuer: verifierEngine.trustedIssuerKey,
-    acceptedRevocationRoots: revocationRegistry ? revocationRegistry.getRootHistory() : [],
+    acceptedRevocationRoots: [revocationRegistry.getRoot()],
   });
 
   response.json({
@@ -175,9 +233,19 @@ app.post("/api/sp/request", (request, response) => {
 
 // S5: Strict Fail-Closed Verification Pipeline
 app.post("/api/sp/verify", async (request, response) => {
+  if (!isProofReady()) {
+    response.status(503).json({ accepted: false, code: "PROVING_ARTIFACTS_MISSING", reason: "Run npm run setup:demo first." });
+    return;
+  }
+  if (typeof request.body?.requestId !== "string") {
+    response.status(400).json({ accepted: false, code: "INVALID_SCHEMA", reason: "requestId is required." });
+    return;
+  }
   try {
     const presentation = request.body;
-    const result = await verifierEngine.verifyPresentation(presentation);
+    const result = await verifierEngine.verifyPresentation(presentation, {
+      requestId: presentation?.requestId,
+    });
 
     if (!result.accepted) {
       response.status(400).json(result);
@@ -186,6 +254,7 @@ app.post("/api/sp/verify", async (request, response) => {
 
     response.json(result);
   } catch (error) {
+    console.error("Presentation verification failed:", error);
     response.status(500).json({
       accepted: false,
       code: "INTERNAL_VERIFIER_ERROR",
@@ -229,6 +298,10 @@ app.get("/api/revocation/path/:credentialId", (request, response) => {
 
 // Revoke a credential (KYC Authority / Issuer action)
 app.post("/api/revocation/revoke", (request, response) => {
+  if (process.env.NODE_ENV === "production") {
+    response.sendStatus(404);
+    return;
+  }
   try {
     const { credentialId } = request.body ?? {};
     if (!credentialId) {
@@ -244,6 +317,10 @@ app.post("/api/revocation/revoke", (request, response) => {
 
 // Register an active credential
 app.post("/api/revocation/register", (request, response) => {
+  if (process.env.NODE_ENV === "production") {
+    response.sendStatus(404);
+    return;
+  }
   try {
     const { credentialId } = request.body ?? {};
     if (!credentialId) {

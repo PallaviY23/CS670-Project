@@ -1,6 +1,6 @@
 # Claim Interface — `KycPresentation` circuit
 
-**Owner:** B. Vaishnavi (V1) · **Status:** DRAFT, for review by all members
+**Owner:** B. Vaishnavi (V1) · **Status:** Implemented for the local demo
 **Circuit:** `circuits/kyc_presentation.circom` · **Instantiation:** `KycPresentation(REV_DEPTH = 16)`, credential tree depth 3 (fixed)
 
 This file is the contract between the circuit, the prover (Durbasmriti), the verifier (Someshwar) and the credential library (Pallavi). Any change to the public signal order, hashing rules or ranges is a coordinated spec change made through a reviewed pull request, and must be reflected in `build/circuit/manifest.json`.
@@ -33,7 +33,7 @@ A proof exists **only if all of the following hold**. Claims are assertions, not
 | 4 | `minAgeOffset` | public input | < 2^32; 180000 for age ≥ 18 | Service policy |
 | 5 | `challenge` | public input | field element | Issued, unexpired, unused |
 | 6 | `spId` | public input | field element | Verifier's own identifier |
-| 7 | `revocationRoot` | public input | field element | Recent roots published by issuer |
+| 7 | `revocationRoot` | public input | field element | Current active-set root stored with the challenge |
 
 **Total: 8 public signals.** The verifier must reject any proof whose signal count is not 8, and any non-canonical value (≥ p).
 
@@ -56,7 +56,7 @@ The credential root itself is not an input. The circuit rebuilds the whole 8-lea
 
 **Wallet note (Durbasmriti):** `otherLeaves` = `leaves[5..7]` of the stored credential, where `leaf_s = Poseidon(s, value_s, salt_s)`.
 
-## 4. Hashing rules (must match `src/common/` exactly)
+## 4. Hashing rules (must match `src/credential/presentation-credential.mjs` exactly)
 
 All hashes are circomlib Poseidon over the BN254 scalar field.
 
@@ -94,11 +94,9 @@ All hashes are circomlib Poseidon over the BN254 scalar field.
 The circuit only proves internal consistency. The verifier must reject the proof unless it also checks:
 
 - the issuer key is trusted,
-- `currentDate` is today's date as stored with the challenge,
-- `minAgeOffset` matches the service's policy,
-- the challenge is fresh and single-use,
-- `spId` is its own identifier,
-- `revocationRoot` is a recently published root. A proof against an old root still passes the circuit.
+- `currentDate`, `minAgeOffset`, `spId`, issuer key, and revocation root match the challenge record,
+- the challenge is fresh and unused, and is consumed only after a valid proof,
+- the revocation root is still the current active-set root at verification time. A proof against an old root still passes the circuit.
 
 ## 7. Sizes (measured, circom 2.2.3, `--O2`)
 
@@ -133,20 +131,12 @@ Recommendation: depth 20. It costs +8% and needs no larger setup. Final choice i
 
 **Kept on purpose.** The range check on `minAgeOffset` (32 constraints) is redundant if the verifier enforces 180000, but it keeps the circuit sound on its own. The cost is negligible.
 
-## 8. Open questions for the group
+## 8. Demo choices and production limits
 
-1. Revocation tree depth (Someshwar): recommendation 20.
-2. Do we use `--O2` for production builds (smaller setup) or keep the default? Recommendation: `--O2`.
-3. Is V4 (claim selector flags) needed, or is one fixed claim set enough for the demo?
+The merged demo uses revocation depth 16 and builds the presentation circuit with `--O2`. The demo issuer is local and synthetic: it accepts the DOB supplied by the UI and sets `kycStatus = 1`; it does not verify identity documents or perform real KYC. The key is development-only. A production deployment needs a real issuer workflow and protected key management, a durable revocation service, and an independently generated multi-party setup.
 
-## 9. Alignment with the credential module (to agree with Pallavi)
+## 9. Credential-module alignment
 
-The earlier *Credential Module Draft* (Pallavi, commit `81f3965`) described a two-attribute prototype. It differs from this interface in three ways that must be settled before integration:
+`src/credential/presentation-credential.mjs` implements this circuit's eight-slot format, root-only EdDSA-Poseidon signature, and `Poseidon(slot, value, salt)` leaf hashing. The earlier `src/credential/credential.mjs` two-attribute selective-disclosure API remains as a standalone first prototype and is not used by the browser demo.
 
-| Topic | Credential module draft | This circuit (task plan, Section 3) |
-|---|---|---|
-| Attributes | `age` (leaf 0), `kycVerified` (leaf 1) | 8 slots; age derived from `dob` (YYYYMMDD) |
-| Signed message | `Poseidon(root, issuedAt, expiry, issuerId)` | `root` only (`expiry`, `issuedAt` are leaves) |
-| Leaf | domain-separated by attribute ID, value, salt | `Poseidon(slot, value, salt)` |
-
-Either option for the signed message works in the circuit. If the issuer keeps signing `Poseidon(root, issuedAt, expiry, issuerId)`, the circuit adds one `Poseidon(4)` (~250 constraints) and takes those three values as private inputs. Agree on one and update both this file and `src/credential/`.
+The website's `/api/demo/issue` endpoint is only for local demonstration. It is not a trusted external issuer service and must be disabled/replaced for deployment.

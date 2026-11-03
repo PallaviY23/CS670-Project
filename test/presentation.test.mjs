@@ -1,16 +1,18 @@
 // V5: witness tests for the full KycPresentation circuit.
-import { test, before } from "node:test";
+import { test, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { loadCircuit } from "./helpers/circuit.mjs";
 import { init, H, randField, newIssuer, scenario, presentationInput, ActiveSet } from "./helpers/fixtures.mjs";
 
 const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 let c;
-before(async () => { await init(); c = await loadCircuit("circuits/kyc_presentation.circom"); });
 
 const input = (sc, over = {}) => ({ ...presentationInput(sc), ...over });
 const ok  = (i) => assert.doesNotReject(c.witness(i));
 const bad = (i) => assert.rejects(c.witness(i));
+
+describe("KycPresentation circuit", () => {
+before(async () => { await init(); c = await loadCircuit("circuits/kyc_presentation.circom"); });
 
 test("valid presentation; public signals in spec order", async () => {
   const sc = await scenario();
@@ -104,4 +106,5 @@ test("nullifier: stable for same SP, different across SPs", async () => {
   const d = await c.witness(input(sc, { spId: 2n }));
   assert.equal(a[1], b[1]);
   assert.notEqual(a[1], d[1]);
+});
 });

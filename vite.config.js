@@ -1,15 +1,22 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 const page = (path) => fileURLToPath(new URL(path, import.meta.url));
 
 export default defineConfig({
   root: "web",
-  plugins: [react()],
+  plugins: [
+    react(),
+    nodePolyfills({
+      include: ["assert", "buffer", "events", "util"],
+      globals: { Buffer: true, global: true, process: true },
+    }),
+  ],
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:4000",
+      "/api": process.env.API_PROXY_TARGET ?? "http://127.0.0.1:4000",
     },
   },
   // The prover worker loads snarkjs, which needs code splitting.

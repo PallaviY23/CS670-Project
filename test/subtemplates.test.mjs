@@ -1,5 +1,5 @@
 // V2: each sub-template with valid and invalid witnesses.
-import { test, before } from "node:test";
+import { test, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { loadCircuit } from "./helpers/circuit.mjs";
 import { init, H, randField, buildTree, pathOf, newIssuer, MIN_AGE_OFFSET } from "./helpers/fixtures.mjs";
@@ -8,6 +8,8 @@ const P = 2188824287183927522224640574525727508854836440041603434369820418657580
 const ok = (c, i) => assert.doesNotReject(c.witness(i));
 const bad = (c, i) => assert.rejects(c.witness(i));
 let F, eddsa;
+
+describe("circuit subtemplates", () => {
 before(async () => ({ F, eddsa } = await init()));
 
 test("AgeAtLeast: exactly 18 today passes, one day short fails", async () => {
@@ -98,4 +100,5 @@ test("IssuerSignature: valid passes; wrong key, wrong message, bad S fail", asyn
   await bad(c, { ...base, Ax: other.Ax, Ay: other.Ay });
   await bad(c, { ...base, root: root + 1n });
   await bad(c, { ...base, S: sig.S + 1n });
+});
 });

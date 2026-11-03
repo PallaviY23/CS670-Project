@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { after, before, test } from "node:test";
+import { after, test } from "node:test";
 import { ArtifactIntegrityError, assertArtifact } from "../src/prover/artifacts.js";
 import { buildStarterInput, ProverInputError } from "../src/prover/inputs.js";
 import { proofSize, prove, verify } from "../src/prover/prove.js";
@@ -14,20 +14,18 @@ const verificationKeyPath = resolve(workDir, "verification_key.json");
 let manifest;
 let verificationKey;
 
-before(async () => {
-  await rm(workDir, { recursive: true, force: true });
-  const setup = await setupCircuit({ r1csPath: paths.r1csPath, zkeyPath, verificationKeyPath });
-  manifest = await writeManifest({
-    manifestPath: resolve(workDir, "manifest.json"),
-    circuit: "kyc_claims",
-    protocol: "groth16",
-    ...setup,
-    ...paths,
-    zkeyPath,
-    verificationKeyPath,
-  });
-  verificationKey = JSON.parse(await readFile(verificationKeyPath, "utf8"));
+await rm(workDir, { recursive: true, force: true });
+const setup = await setupCircuit({ r1csPath: paths.r1csPath, zkeyPath, verificationKeyPath });
+manifest = await writeManifest({
+  manifestPath: resolve(workDir, "manifest.json"),
+  circuit: "kyc_claims",
+  protocol: "groth16",
+  ...setup,
+  ...paths,
+  zkeyPath,
+  verificationKeyPath,
 });
+verificationKey = JSON.parse(await readFile(verificationKeyPath, "utf8"));
 
 after(async () => {
   await terminateCurves();

@@ -92,6 +92,18 @@ export class ChallengeStore {
     return record;
   }
 
+  lookup(challenge) {
+    const challengeStr = String(challenge).trim();
+    const record = this.challenges.get(challengeStr);
+    if (!record) return { valid: false, reason: "CHALLENGE_NOT_FOUND" };
+    if (record.used) return { valid: false, reason: "CHALLENGE_ALREADY_USED" };
+    if (Date.now() > record.expiresAtMs) {
+      this.challenges.delete(challengeStr);
+      return { valid: false, reason: "CHALLENGE_EXPIRED" };
+    }
+    return { valid: true, record };
+  }
+
   /**
    * Validates and atomically consumes a challenge.
    * @param {string} challenge
@@ -212,11 +224,17 @@ export class VerifierEngine {
     let manifest = null;
     if (manifestPath && existsSync(manifestPath)) {
       manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-      if (manifest.verificationKeyHash && manifest.verificationKeyHash !== vkHash) {
+      const expectedHash = manifest.verificationKeyHash ?? manifest.artifacts?.verificationKey?.sha256;
+      if (!expectedHash) {
+        throw new Error("Manifest does not contain a verification-key hash.");
+      }
+      if (expectedHash !== vkHash) {
         throw new Error(
-          `Verification key hash mismatch! Manifest expected ${manifest.verificationKeyHash}, got ${vkHash}`
+          `Verification key hash mismatch! Manifest expected ${expectedHash}, got ${vkHash}`
         );
       }
+    } else {
+      throw new Error("Verifier manifest is missing.");
     }
 
     return { verificationKey, vkHash, manifest };
@@ -290,17 +308,23 @@ export class VerifierEngine {
 
     // 4. Trusted Issuer Public Key
     const trustedIssuer = context.trustedIssuerKey ?? this.trustedIssuerKey;
-    if (trustedIssuer) {
-      const expectedAx = String(trustedIssuer.ax).trim();
-      const expectedAy = String(trustedIssuer.ay).trim();
-      if (issuerAx !== expectedAx || issuerAy !== expectedAy) {
-        return {
-          accepted: false,
-          code: "UNTRUSTED_ISSUER",
-          reason: "Issuer public key does not match trusted KYC Authority.",
-          verificationMs: elapsed(),
-        };
-      }
+    if (!trustedIssuer) {
+      return {
+        accepted: false,
+        code: "TRUSTED_ISSUER_MISSING",
+        reason: "Verifier has no configured trusted issuer key.",
+        verificationMs: elapsed(),
+      };
+    }
+    const expectedAx = String(trustedIssuer.ax ?? trustedIssuer.Ax).trim();
+    const expectedAy = String(trustedIssuer.ay ?? trustedIssuer.Ay).trim();
+    if (issuerAx !== expectedAx || issuerAy !== expectedAy) {
+      return {
+        accepted: false,
+        code: "UNTRUSTED_ISSUER",
+        reason: "Issuer public key does not match trusted KYC Authority.",
+        verificationMs: elapsed(),
+      };
     }
 
     // 5. Date Verification
@@ -314,19 +338,57 @@ export class VerifierEngine {
       };
     }
 
-    // 6. Challenge Verification (Issued, Unexpired, Unused -> Consumed)
-    const consumeResult = this.challengeStore.consume(challenge);
-    if (!consumeResult.valid) {
+    // Validate request context without consuming the challenge. Invalid proofs
+    // must not burn a user's request; consumption happens after proof success.
+    const challengeResult = this.challengeStore.lookup(challenge);
+    if (!challengeResult.valid) {
       return {
         accepted: false,
-        code: consumeResult.reason,
-        reason: `Challenge validation failed: ${consumeResult.reason}.`,
+        code: challengeResult.reason,
+        reason: `Challenge validation failed: ${challengeResult.reason}.`,
         verificationMs: elapsed(),
       };
     }
+    const challengeRecord = challengeResult.record;
+    if (context.requestId !== undefined && String(context.requestId) !== challengeRecord.requestId) {
+      return {
+        accepted: false,
+        code: "REQUEST_ID_MISMATCH",
+        reason: "Request ID does not match the issued challenge.",
+        verificationMs: elapsed(),
+      };
+    }
+    if (Number(currentDate) !== challengeRecord.currentDate) {
+      return {
+        accepted: false,
+        code: "DATE_MISMATCH",
+        reason: "Current date does not match the date bound to this challenge.",
+        verificationMs: elapsed(),
+      };
+    }
+    if (Number(minAgeOffset) !== challengeRecord.minAgeOffset) {
+      return {
+        accepted: false,
+        code: "POLICY_MISMATCH",
+        reason: "Minimum-age policy does not match the policy bound to this challenge.",
+        verificationMs: elapsed(),
+      };
+    }
+    if (challengeRecord.trustedIssuer) {
+      const requestIssuer = challengeRecord.trustedIssuer;
+      if (issuerAx !== String(requestIssuer.ax ?? requestIssuer.Ax)
+        || issuerAy !== String(requestIssuer.ay ?? requestIssuer.Ay)) {
+        return {
+          accepted: false,
+          code: "UNTRUSTED_ISSUER",
+          reason: "Issuer key does not match the key bound to this challenge.",
+          verificationMs: elapsed(),
+        };
+      }
+    }
 
     // 7. Service Provider Identifier Verification
-    const expectedSpId = String(context.spId ?? this.spId).trim();
+    const expectedSpId = String(context.spId ?? challengeRecord.spId ?? this.spId).trim();
     if (spId !== expectedSpId) {
       return {
         accepted: false,
@@ -335,14 +397,31 @@ export class VerifierEngine {
         verificationMs: elapsed(),
       };
     }
+    if (spId !== challengeRecord.spId) {
+      return {
+        accepted: false,
+        code: "SP_ID_MISMATCH",
+        reason: "Service provider ID does not match the ID bound to this challenge.",
+        verificationMs: elapsed(),
+      };
+    }
 
     // 8. Revocation Root Verification
+    if (challengeRecord.acceptedRevocationRoots.length > 0
+      && !challengeRecord.acceptedRevocationRoots.includes(revocationRoot)) {
+      return {
+        accepted: false,
+        code: "REVOCATION_ROOT_REJECTED",
+        reason: "Revocation root was not accepted when this challenge was issued.",
+        verificationMs: elapsed(),
+      };
+    }
     if (this.revocationRegistry) {
-      if (!this.revocationRegistry.isRootAccepted(revocationRoot)) {
+      if (this.revocationRegistry.getRoot() !== revocationRoot) {
         return {
           accepted: false,
           code: "REVOCATION_ROOT_REJECTED",
-          reason: "Revocation root is not in accepted current or historical root set.",
+          reason: "Revocation root is not the current active-credential root.",
           verificationMs: elapsed(),
         };
       }
@@ -385,6 +464,16 @@ export class VerifierEngine {
         accepted: false,
         code: "INVALID_PROOF",
         reason: "Cryptographic proof is invalid for given public signals.",
+        verificationMs: elapsed(),
+      };
+    }
+
+    const consumeResult = this.challengeStore.consume(challenge);
+    if (!consumeResult.valid) {
+      return {
+        accepted: false,
+        code: consumeResult.reason,
+        reason: `Challenge validation failed: ${consumeResult.reason}.`,
         verificationMs: elapsed(),
       };
     }

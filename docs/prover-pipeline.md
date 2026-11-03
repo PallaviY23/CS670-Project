@@ -22,7 +22,7 @@ Browser ────────────────────────
   Web Worker: load wasm + zkey (Cache API, hash-checked against manifest) → wtns.calculate → groth16.prove
      │  { proof, publicSignals, timings }
      ▼
-  Service Provider API  /api/verify
+  Service Provider API  /api/sp/verify
 ```
 
 ## 2. Components
@@ -31,19 +31,19 @@ Browser ────────────────────────
 | --- | --- |
 | `src/prover/setup.js` | Sizes the Powers of Tau from the r1cs (same rule as snarkjs), reuses a cached `build/ptau/potN_final.ptau` or generates one, creates the zkey, checks it with `zKey.verifyFromR1cs`, exports the verification key, writes the manifest. `PTAU_FILE=<path>` uses an external ceremony file such as the public Hermez one. PLONK/FFLONK setups grow the ptau until setup succeeds. |
 | `src/prover/prove.js` | `prove(input, { wasm, zkey, protocol })` runs witness generation and proving as two timed steps, and `verify()` is timed too. Inputs may be paths or `Uint8Array`s, so the same code runs in Node and the browser. `proofSize()` reports the raw affine size and the JSON size. |
-| `src/prover/inputs.js` | `buildStarterInput()` for the current circuit; `buildPresentationInput()` for the credential-bound circuit (draft signal names, see §5). It also has date helpers (`YYYYMMDD`, `currentDate − dob ≥ years·10000`) and BN254 field checks. Every failure is a `ProverInputError` with a `code`. |
+| `src/prover/inputs.js` | `buildPresentationInput()` maps the signed 8-slot credential and current revocation path to the exact `KycPresentation` witness schema. It validates dates, issuer, policy, challenge expiry, accepted root, and field elements before witness generation. Every failure is a `ProverInputError` with a `code`. |
 | `src/prover/artifacts.js` | SHA-256 checks of artifacts against the manifest (`ArtifactIntegrityError`). |
 | `src/prover/browser-loader.js` | Downloads wasm and zkey once, stores them in the Cache API under their manifest hash, and re-checks the hash on every load. |
 | `src/prover/prover.worker.js`, `worker-client.js` | Proving runs in a Web Worker with progress events (`artifacts`, `witness`, `proof`), so the UI stays responsive. |
 | `src/wallet/` | `createWallet()`: holder secret generated on the device (uniform non-zero BN254 element), encrypted with PBKDF2-SHA256 (600 000 iterations) + AES-256-GCM. Credentials are stored only after the injected `verifyCredential` (credential module) accepts them, and the list view never shows private attributes. Storage is IndexedDB in the browser or in-memory for tests. |
-| `scripts/setup-demo.mjs` | Demo setup using the above; `CIRCUIT=<name>` selects another compiled circuit. |
+| `scripts/setup-demo.mjs` | Demo setup using the above; defaults to `kyc_presentation`. `npm run setup:demo` compiles this circuit and generates local development-only setup artifacts. |
 | `scripts/bench*.mjs` | Benchmarks (§4). |
 
 ### Commands
 
 ```powershell
-npm test                    # circuit build + all tests (circuit, prover, inputs, wallet)
-npm run setup:demo          # ptau (cached) + zkey + verification key + manifest
+npm test                    # circuit build + all credential, circuit, prover, input and wallet tests
+npm run setup:demo          # presentation circuit + ptau (cached) + zkey + verification key + manifest
 npm run bench               # Node, Groth16, 30 runs
 npm run bench:compare       # Groth16 vs PLONK vs FFLONK
 npm run bench:components    # Merkle depth and EdDSA cost
@@ -56,7 +56,7 @@ Results are written to `build/bench/` as JSON plus per-run and summary CSV files
 
 - **Proving key check:** setup fails unless `zKey.verifyFromR1cs` confirms that the zkey matches the circuit and the Powers of Tau.
 - **Artifact integrity:** the browser rejects a wasm or zkey whose SHA-256 differs from the manifest, and drops cached copies that fail the check. The manifest also lets the verifier pin the verification-key hash (verifier module).
-- **Witness locality:** the witness is built and consumed inside the worker. Only `{proof, publicSignals}` is posted to the API, and the benchmark and API check confirm that the request body contains nothing else.
+- **Witness locality:** the witness is built and consumed inside the worker. The API receives the proof, public signals, and request ID, not the credential, DOB, holder secret, or witness.
 - **Development ceremony:** the locally generated ptau and zkey contribution use one random contribution each. They are fine for the prototype, but not a substitute for a multi-party ceremony (`PTAU_FILE` allows the public Hermez file).
 - **Wallet:** the holder secret never touches storage in plain text. A wrong passphrase or modified ciphertext fails AES-GCM authentication. Credentials that fail the issuer check are never stored.
 
@@ -64,7 +64,7 @@ Results are written to `build/bench/` as JSON plus per-run and summary CSV files
 
 Host: AMD Ryzen 3 5300U (4 cores / 8 threads), Windows 11, Node 20.17.0, headless Chrome 156. Means are over measured runs after warm-up; p95 is the 95th percentile.
 
-### 4.1 Current circuit: proof-system comparison (Node, 30 runs, 3 warm-up)
+### 4.1 Starter circuit: proof-system comparison (Node, 30 runs, 3 warm-up)
 
 | Protocol | Constraints | Proof (raw) | Proving key | Witness ms | Prove ms (mean / p95) | Verify ms |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -99,7 +99,7 @@ The cold first proof took 259 ms, of which 48 ms was downloading and hash-checki
 - Verification time is flat at about 15 ms whatever the circuit size, as expected for Groth16.
 - Issuer binding (EdDSA) costs about as much as a depth-17 Merkle proof.
 
-### 4.4 Estimate for the full presentation circuit
+### 4.4 Earlier estimate for the full presentation circuit
 
 | Part | Constraints |
 | --- | --- |
@@ -109,7 +109,7 @@ The cold first proof took 259 ms, of which 48 ms was downloading and hash-checki
 | Holder commitment, nullifier, date range checks, comparators | ≈ 1 000 (estimate) |
 | **Total** | **≈ 13–15 k** |
 
-This needs a 2^14 Powers of Tau, which `setupCircuit` selects automatically. Extrapolating from §4.3, proving should take about 1.3–1.6 s in Node on this laptop, with verification still about 15 ms.
+This estimate predates the merged whole-tree optimization. The current circuit constraint count is recorded in the generated manifest; the exact setup and proving time depend on the machine. It needs a 2^14 Powers of Tau, which `setupCircuit` selects automatically.
 
 **Optimisation for the circuit design:** the circuit could rebuild the depth-3 credential root once from all 8 leaves, taking the 3 unopened slots as leaf hashes. That needs 7 Poseidon(2) hashes (1 701 constraints) instead of 15 for five separate openings (3 645), saving about 1 900 constraints, or roughly 13 % of the circuit.
 

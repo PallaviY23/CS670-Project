@@ -1,61 +1,70 @@
-# CS670-Project
-Privacy-Preserving Digital KYC System Using Zero-Knowledge Proofs
+# Privacy-Preserving Digital KYC
 
-Starter workspace for the team's privacy-preserving KYC prototype. The stack is Circom 2, circomlib, SnarkJS, React/Vite, and an Express verification API.
+A local prototype that issues a signed KYC credential, stores it in an encrypted browser wallet, and proves selected claims with a Groth16 zero-knowledge proof. The service-provider verifier checks the issuer, request policy, challenge, and current revocation root. The holder's date of birth and wallet secret are not sent in the proof-submission request.
 
-## Prerequisites
+This is a classroom/demo prototype, not a production identity or KYC service. The local demo issuer accepts a user-entered date of birth and marks KYC as verified; it does not check identity documents or perform real KYC. Issuer and setup keys are development-only.
 
-- Node.js 20 or later
+## Requirements and setup
+
+- Node.js 20+
 - npm
-
-## Setup
 
 ```powershell
 npm install
 npm test
 ```
 
-Tests cover adult and underage circuit outputs, invalid circuit witnesses, credential signatures, selective attribute disclosures, tampering, issuer trust, and expiry. Generated files are written under `build/` and are ignored by Git.
+`npm test` builds the starter circuits and runs the credential, wallet, verifier, prover, and credential-bound circuit tests. The merged presentation circuit is compiled by the circuit tests; these tests may take several minutes on a laptop.
 
-## Run the Demo
+The test build uses the same `build/circuit` folder as the demo and replaces its manifest. Run `npm run setup:demo` after `npm test` before starting the website.
 
-Create local Groth16 proving and verification artifacts, then start the website and API:
+## Run the website demo
+
+Create local proving artifacts for the credential-bound presentation circuit, then start the API and Vite site:
 
 ```powershell
 npm run setup:demo
 npm run dev
 ```
 
-Open `http://localhost:5173`. The first setup creates a local development-only Powers of Tau (cached in `build/ptau/`, so later setups only regenerate the proving key); do not use its keys for production. Set `PTAU_FILE` to use an external ceremony file instead. Setup checks the proving key against the circuit and writes `build/circuit/manifest.json` with the constraint count, public signal order and artifact hashes. Proofs are generated in a browser Web Worker from hash-checked, cached artifacts. The API receives only the proof and public outputs and does not store them.
+The first `npm run setup:demo` compiles the 11,923-constraint circuit and creates a local Powers of Tau file; it can take several minutes. Let it finish before starting the website.
 
-Re-run `npm run setup:demo` after `npm test` or any circuit rebuild because rebuilding clears keys that could otherwise be stale.
+Open `http://localhost:5173`.
 
-## Benchmarks
+1. Enter a wallet passphrase (at least 8 characters) and choose **Create / unlock wallet**. The holder secret is generated in the browser and encrypted in IndexedDB.
+2. Enter a date of birth and choose **Issue and store demo credential**. The local demo issuer signs an 8-slot Poseidon credential root bound to the wallet's holder commitment and registers its ID in the active set.
+3. Choose **Generate & verify**. The browser builds the witness and Groth16 proof in a Web Worker. It sends only the proof, public signals, and request ID to `/api/sp/verify`.
+4. The receipt shows whether the proof passed, proof timings, and proof size. Use the **Service Provider (SP)** tab to inspect a challenge and revoke the displayed credential ID; after revocation, a new proof must fail.
+
+The local demo issuer key is stored at `build/demo-issuer-key.json` so the demo wallet keeps working across API restarts. It is ignored by Git and must never be used in a real deployment. Deleting it invalidates credentials issued by that local demo key. `npm run setup:demo` creates a development-only Powers of Tau file (cached under `build/ptau/`) and circuit-specific keys; an external ceremony file can be selected with `PTAU_FILE`.
+
+The browser downloads the proving WASM and zkey from the API and verifies their hashes against `build/circuit/manifest.json`. If setup or circuit sources change, rerun `npm run setup:demo`. Do not reuse the development setup for production.
+
+## Useful commands
 
 ```powershell
-npm run bench               # Node proving/verification, Groth16
-npm run bench:compare       # Groth16 vs PLONK vs FFLONK
-npm run bench:components    # cost of Merkle depth and EdDSA signature checks
-npm run bench:browser       # headless Chrome/Edge (needs setup:demo)
+npm run test:circuit          # merged circuit witness/security cases
+npm run circuit:presentation  # compile the credential-bound presentation circuit
+npm run setup:demo            # compile and create local proving/verification artifacts
+npm run build                 # build the website
+npm run bench                 # Node proof benchmark
+npm run bench:browser         # browser/worker benchmark after setup:demo
 ```
 
-Results are written to `build/bench/` (JSON and CSV). See [docs/prover-pipeline.md](docs/prover-pipeline.md) for results.
+## How the proof works
 
-## Work Areas
+- An issuer signs the Poseidon root of eight fixed credential slots.
+- The circuit checks issuer signature, credential-tree consistency, age threshold, KYC status, expiry, holder-secret binding, and active-set membership.
+- Public signals are ordered as `[nullifier, issuerAx, issuerAy, currentDate, minAgeOffset, challenge, spId, revocationRoot]`.
+- The verifier binds those signals to its trusted issuer and the challenge record, accepts only the current revocation root, and consumes a challenge only after a valid proof.
 
-- `src/credential/`: issuer-signed Poseidon/Merkle credentials and selective presentations (Pallavi)
-- `circuits/`: age and KYC claim constraints and circuit tests (Vaishnavi)
-- `src/prover/`: trusted setup, witness/proof generation, browser proving and proving performance (Durbasmriti)
-- `src/wallet/`: encrypted holder secret and credential storage (Durbasmriti)
-- `src/verifier/`: proof/public-input verification and security tests (Someshwar)
-- `web/`: interactive proof workspace
-- `server/`: health, proof artifact, and verification endpoints
-- `spec/`: shared interfaces and decisions that affect integration
+See [spec/claim-interface.md](spec/claim-interface.md) for the circuit interface and [docs/prover-pipeline.md](docs/prover-pipeline.md) for the proof pipeline.
 
-Each owner can develop inside their module against the shared contracts in `spec/`. Keep cross-module changes small and coordinate interface changes before integrating. Pallavi's credential module is implemented and tested, but the current circuit still accepts self-asserted claims; issuer-signature and commitment verification inside the ZK circuit remain an integration task.
+## Project areas
 
-## Current Circuit Scope
-
-`circuits/kyc_claims.circom` is an integration starter, not a production credential system. It proves the age comparison and that the supplied KYC flag is a bit. It does **not** prove that an authorized KYC Authority issued the flag, bind age to a credential, or provide revocation. The website marks the KYC flag as simulated. Those guarantees need to be designed and integrated before treating a proof as real KYC verification.
-
-See [spec/claim-interface.md](spec/claim-interface.md) for the initial signal contract and security boundary.
+- `src/credential/`: issuer-signed Poseidon/Merkle credentials
+- `circuits/`: age, signature, credential-tree, holder-binding, and revocation constraints
+- `src/prover/`: setup, witness/proof generation, browser proving, and performance tools
+- `src/wallet/`: encrypted holder secret and credential storage
+- `src/verifier/`: public-input checks, challenge/replay protection, revocation, and audit log
+- `server/`, `web/`: local demo API and website

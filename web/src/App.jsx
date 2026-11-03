@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { buildStarterInput } from "../../src/prover/inputs.js";
+import { buildPresentationInput } from "../../src/prover/inputs.js";
 import { createProverClient } from "../../src/prover/worker-client.js";
+import { createWallet } from "../../src/wallet/wallet.js";
+import { indexedDbStorage } from "../../src/wallet/storage.js";
+import {
+  createHolderCommitment,
+  verifyCredential,
+} from "../../src/credential/presentation-credential.mjs";
 import {
   Activity,
   ArrowDownRight,
@@ -32,25 +38,21 @@ const stageLabels = {
   verify: "Verifying with service provider",
 };
 
-async function createReceiptId(proof, publicSignals) {
-  const payload = new TextEncoder().encode(JSON.stringify({ proof, publicSignals }));
-  const digest = await crypto.subtle.digest("SHA-256", payload);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 12)
-    .toUpperCase();
-}
-
 function App() {
   const [activeTab, setActiveTab] = useState("workspace"); // "workspace" | "sp-view"
   const [health, setHealth] = useState(initialHealth);
-  const [age, setAge] = useState(21);
-  const [kycVerified, setKycVerified] = useState(true);
+  const [dob, setDob] = useState("2000-06-15");
+  const [walletPassphrase, setWalletPassphrase] = useState("");
+  const [walletUnlocked, setWalletUnlocked] = useState(false);
+  const [holderSecret, setHolderSecret] = useState("");
+  const [credential, setCredential] = useState(null);
+  const [walletMessage, setWalletMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [stage, setStage] = useState("artifacts");
   const proverRef = useRef(null);
+  const walletRef = useRef(null);
 
   useEffect(() => () => proverRef.current?.terminate(), []);
 
@@ -106,11 +108,72 @@ function App() {
         body: JSON.stringify({ spId: "123456789", minAgeOffset: 180000 }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Could not create a proof request.");
       setSpRequest(data);
+      return data;
     } catch (err) {
-      alert("Failed to request challenge from Service Provider.");
+      setError(err instanceof Error ? err.message : "Failed to request a proof challenge.");
+      throw err;
     } finally {
       setSpLoading(false);
+    }
+  }
+
+  async function handleUnlockWallet() {
+    setError("");
+    setWalletMessage("");
+    try {
+      if (!health.trustedIssuer || typeof health.trustedIssuer !== "object") throw new Error("Wait for the API issuer key to load.");
+      const wallet = createWallet({
+        storage: indexedDbStorage(),
+        verifyCredential: (candidate) => verifyCredential(candidate, health.trustedIssuer),
+      });
+      walletRef.current = wallet;
+      if (!(await wallet.isInitialised())) await wallet.initialise(walletPassphrase);
+      const secret = await wallet.unlock(walletPassphrase);
+      setHolderSecret(secret.toString());
+      setWalletUnlocked(true);
+      const existing = await wallet.listCredentials();
+      if (existing.length > 0) {
+        const stored = await wallet.getCredential(existing[0].id);
+        if (!(await verifyCredential(stored, health.trustedIssuer))) {
+          throw new Error("Stored credential was signed by a different demo issuer. Start a fresh demo wallet.");
+        }
+        setCredential(stored);
+        setRevokeInputId(String(stored.attributes.credentialId));
+        setWalletMessage("Wallet unlocked; an issued credential is ready.");
+      } else {
+        setWalletMessage("Wallet ready. Issue a local demo credential to continue.");
+      }
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Could not unlock the wallet.");
+    }
+  }
+
+  async function handleIssueCredential() {
+    setError("");
+    setWalletMessage("");
+    try {
+      if (!walletUnlocked || !walletRef.current) throw new Error("Unlock the wallet first.");
+      const normalizedDob = Number(dob.replaceAll("-", ""));
+      const response = await fetch("/api/demo/issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dob: normalizedDob,
+          holderCommitment: await createHolderCommitment(holderSecret),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Demo issuer could not issue a credential.");
+      await walletRef.current.importCredential(result.credential);
+      setCredential(result.credential);
+      setRevokeInputId(String(result.credential.attributes.credentialId));
+      setRevocationRoot(result.revocationRoot);
+      setSpRequest(null);
+      setWalletMessage("Credential issued, signature checked, and encrypted in this browser wallet.");
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Credential issuance failed.");
     }
   }
 
@@ -145,25 +208,33 @@ function App() {
     setStage("artifacts");
 
     try {
-      const input = buildStarterInput({ age, kycVerified });
+      if (!credential || !holderSecret) throw new Error("Unlock a wallet and issue a credential first.");
+      let request = spRequest;
+      if (!request || Date.parse(request.expiresAt) <= Date.now()) request = await requestSpChallenge();
+      const pathResponse = await fetch(`/api/revocation/path/${encodeURIComponent(credential.attributes.credentialId)}`);
+      const revocationPath = await pathResponse.json();
+      if (!pathResponse.ok) throw new Error(revocationPath.error ?? "Credential is not active in the revocation registry.");
+      const input = buildPresentationInput(credential, {
+        holderSecret,
+        request,
+        revocationPath,
+      });
       proverRef.current ??= createProverClient();
       const { proof, publicSignals, timings, proofBytes } = await proverRef.current.prove(input, { onProgress: setStage });
       setStage("verify");
-      const [receiptId, verificationResponse] = await Promise.all([
-        createReceiptId(proof, publicSignals),
-        fetch("/api/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ proof, publicSignals }),
-        }),
-      ]);
+      const verificationResponse = await fetch("/api/sp/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId: request.requestId, proof, publicSignals }),
+      });
       const verification = await verificationResponse.json();
 
       if (!verificationResponse.ok) {
-        throw new Error(verification.error ?? "The verifier could not process this proof.");
+        throw new Error(verification.reason ?? verification.error ?? "The verifier could not process this proof.");
       }
 
-      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw, receiptId });
+      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw });
+      setSpRequest(null);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Proof generation failed.");
     } finally {
@@ -244,8 +315,8 @@ function App() {
                   <div className="eyebrow"><span className="eyebrow-line" />SERVICE PROVIDER VIEW (APEX FINANCIAL)</div>
                   <h1>High-Yield Account<br /><em>Compliance Verification</em></h1>
                   <p className="intro-description">
-                    The relying party requests compliance proofs (Age ≥ 18 and Active KYC) without ever receiving
-                    the customer&apos;s date of birth, name, or raw government identity documents.
+                    The relying party verifies age, issuer signature, holder binding, credential expiry, and revocation
+                    without receiving the customer&apos;s date of birth or credential attributes.
                   </p>
                 </div>
                 <div className="intro-side-note">
@@ -262,7 +333,7 @@ function App() {
                     <div className="section-kicker">STEP 01 / CHALLENGE ISSUANCE</div>
                     <h3>Anti-Replay Nonce & Policy</h3>
                   </div>
-                  <button className="sp-btn" onClick={requestSpChallenge} disabled={spLoading}>
+                  <button className="sp-btn" onClick={() => requestSpChallenge().catch(() => {})} disabled={spLoading}>
                     <RefreshCw size={14} className={spLoading ? "spin" : ""} />
                     {spRequest ? "Refresh Challenge" : "Issue New Proof Request"}
                   </button>
@@ -330,19 +401,25 @@ function App() {
                     <RefreshCw size={12} /> Refresh Log
                   </button>
                 </div>
-              ) : busy ? (
-                <div className="verifying-state">
-                  <span className="large-spinner" />
-                  <h3>Building a proof</h3>
-                  <p>Your witness is being processed locally. No age value leaves this tab.</p>
-                  <div className="progress-track"><span /></div>
-                  <span className="mono progress-caption">{stageLabels[stage]?.toUpperCase()} · GROTH16 · BN128</span>
-                </div>
-              </section>
-
+                {spAuditEntries.length === 0 ? (
+                  <p className="panel-subtitle">No presentations have been accepted in this session.</p>
+                ) : (
+                  <div className="audit-list">
+                    {spAuditEntries.map((entry) => (
+                      <div className="challenge-field" key={entry.receiptId}>
+                        <span>{entry.timestamp} · SP {entry.spId}</span>
+                        <strong>{entry.receiptId} · nullifier {entry.nullifier}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : (
+            <>
               <div className="prototype-banner">
                 <CircleAlert size={17} />
-                <p><strong>Prototype boundary</strong> The KYC status is currently a simulated private input, not an issuer-signed credential.</p>
+                <p><strong>Demo boundary</strong> The local demo issuer sees the date of birth at issuance. The service provider receives only a proof and public context.</p>
                 <a href="#proof-flow">See the flow <ArrowRight size={13} /></a>
               </div>
 
@@ -350,32 +427,46 @@ function App() {
                 <form className="panel request-panel" onSubmit={handleSubmit}>
                   <div className="panel-heading">
                     <div>
-                      <div className="section-kicker">01 / PRIVATE WITNESS</div>
-                      <h2>Set up a claim</h2>
+                      <div className="section-kicker">01 / HOLDER WALLET</div>
+                      <h2>Issue a credential</h2>
                     </div>
                     <span className="panel-icon"><Fingerprint size={18} /></span>
                   </div>
-                  <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
-                  <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
-                  <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
-                  <div className="receipt-metrics">
-                    <div><span>WITNESS TIME</span><strong>{receipt.witnessMs} <small>ms</small></strong></div>
-                    <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
-                    <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
-                    <div><span>PROOF SIZE</span><strong>{receipt.proofBytes} <small>B</small></strong></div>
-                  </div>
-                  <div className="field-hint"><LockKeyhole size={13} /> Age is not sent to the API.</div>
-
-                  <div className="field-label kyc-label">Credential status <span className="simulated-label">SIMULATED</span></div>
-                  <label className="toggle-row" htmlFor="kyc-verified">
-                    <span className="toggle-copy"><strong>KYC verified</strong><small>Private circuit input for this demo</small></span>
-                    <input id="kyc-verified" type="checkbox" checked={kycVerified} onChange={(event) => setKycVerified(event.target.checked)} />
-                    <span className="toggle-track" aria-hidden="true"><span /></span>
-                  </label>
-
+                  <label className="field-label" htmlFor="wallet-passphrase">Wallet passphrase</label>
+                  <input
+                    id="wallet-passphrase"
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={8}
+                    value={walletPassphrase}
+                    onChange={(event) => setWalletPassphrase(event.target.value)}
+                    placeholder="At least 8 characters"
+                    required
+                  />
+                  <button className="sp-btn-secondary" type="button" onClick={handleUnlockWallet} disabled={walletPassphrase.length < 8}>
+                    <LockKeyhole size={14} />{walletUnlocked ? "Unlock wallet" : "Create / unlock wallet"}
+                  </button>
+                  {walletMessage && <div className="field-hint"><CircleCheck size={13} />{walletMessage}</div>}
+                  <label className="field-label" htmlFor="date-of-birth">Date of birth (sent to the local demo issuer)</label>
+                  <input
+                    id="date-of-birth"
+                    type="date"
+                    value={dob}
+                    onChange={(event) => setDob(event.target.value)}
+                    required
+                  />
+                  <button className="sp-btn-secondary" type="button" onClick={handleIssueCredential} disabled={!walletUnlocked}>
+                    <FileCheck2 size={14} />Issue and store demo credential
+                  </button>
+                  {credential && (
+                    <div className="field-hint">
+                      <CircleCheck size={13} />Credential {credential.attributes.credentialId} is issuer-signed and stored in the encrypted wallet.
+                    </div>
+                  )}
+                  <div className="field-hint"><LockKeyhole size={13} />The holder secret stays in this browser; the verifier receives no DOB.</div>
                   <div className="claim-summary">
-                    <div><span className="summary-dot" /><span>Claim 01</span><strong>Age ≥ 18</strong></div>
-                    <div><span className="summary-dot" /><span>Claim 02</span><strong>KYC verified</strong></div>
+                    <div><span className="summary-dot" /><span>Credential</span><strong>{credential ? "Stored" : "Not issued"}</strong></div>
+                    <div><span className="summary-dot" /><span>Presentation</span><strong>Age ≥ 18 · KYC · Active</strong></div>
                   </div>
 
                   {!health.proofReady && (
@@ -386,7 +477,7 @@ function App() {
                   )}
                   {error && <div className="error-message" role="alert"><CircleAlert size={15} />{error}</div>}
 
-                  <button className="primary-button" type="submit" disabled={!health.proofReady || busy || age === ""}>
+                  <button className="primary-button" type="submit" disabled={!health.proofReady || busy || !credential || !walletUnlocked}>
                     {busy ? <><span className="spinner" />Generating proof locally</> : <><Sparkles size={16} />Generate & verify<ArrowRight size={15} /></>}
                   </button>
                   <div className="button-footnote"><span className="live-dot" />{health.proofReady ? "Proof setup ready" : "Proof setup not initialized"}</div>
@@ -412,19 +503,19 @@ function App() {
                     <div className="verifying-state">
                       <span className="large-spinner" />
                       <h3>Building a proof</h3>
-                      <p>Your witness is being processed locally. No age value leaves this tab.</p>
+                      <p>Your credential witness is processed locally. Only the proof and public request context are sent.</p>
                       <div className="progress-track"><span /></div>
-                      <span className="mono progress-caption">GROTH16 · BN128</span>
+                      <span className="mono progress-caption">{stageLabels[stage]?.toUpperCase()} · GROTH16 · BN128</span>
                     </div>
                   ) : (
                     <div className="receipt-content">
                       <div className={`receipt-outcome ${receipt.accepted ? "success" : "failure"}`}>
                         {receipt.accepted ? <CircleCheck size={21} /> : <CircleAlert size={21} />}
-                        <div><strong>{receipt.accepted ? "Claims verified" : receipt.proofValid ? "Proof valid · claim not met" : "Proof rejected"}</strong><span>{receipt.accepted ? "Service provider may proceed" : "The requested condition was not satisfied"}</span></div>
+                        <div><strong>{receipt.accepted ? "Claims verified" : receipt.proofValid ? "Proof valid · claim not met" : "Proof rejected"}</strong><span>{receipt.accepted ? "Service provider may proceed" : (receipt.reason ?? "The requested condition was not satisfied")}</span></div>
                       </div>
                       <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
-                      <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
-                      <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                      <div className="signal-row"><span>ageAtLeast18</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                      <div className="signal-row"><span>kycVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
                       <div className="receipt-metrics">
                         <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
                         <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
@@ -438,30 +529,29 @@ function App() {
               </section>
             </>
           )}
-
           <section className="flow-section" id="proof-flow">
             <div className="section-heading-row">
               <div><div className="section-kicker">HOW THIS DEMO WORKS</div><h2>Data stays with its owner.</h2></div>
               <span className="mono section-meta">LOCAL PROTOTYPE / GROTH16</span>
             </div>
             <div className="flow-grid">
-              <article className="flow-step"><span className="flow-number">01</span><div className="flow-icon"><FileCheck2 size={18} /></div><h3>Private inputs</h3><p>Age and the simulated KYC flag are entered in the browser.</p><span className="flow-tag private-tag">PRIVATE WITNESS</span></article>
+              <article className="flow-step"><span className="flow-number">01</span><div className="flow-icon"><FileCheck2 size={18} /></div><h3>Signed credential</h3><p>A local demo issuer signs a Poseidon root bound to the encrypted wallet secret.</p><span className="flow-tag private-tag">WALLET-STORED</span></article>
               <div className="flow-connector"><ArrowRight size={16} /></div>
               <article className="flow-step"><span className="flow-number">02</span><div className="flow-icon"><KeyRound size={18} /></div><h3>Local proof</h3><p>SnarkJS creates a Groth16 proof without uploading the witness.</p><span className="flow-tag">CLIENT-SIDE</span></article>
               <div className="flow-connector"><ArrowRight size={16} /></div>
-              <article className="flow-step"><span className="flow-number">03</span><div className="flow-icon"><ShieldCheck size={18} /></div><h3>Proof check</h3><p>The API verifies the proof and reads only the public claim outputs.</p><span className="flow-tag">PROOF + SIGNALS</span></article>
+              <article className="flow-step"><span className="flow-number">03</span><div className="flow-icon"><ShieldCheck size={18} /></div><h3>Proof check</h3><p>The API checks the issuer, challenge, policy, one-time use, and current revocation root.</p><span className="flow-tag">PROOF + CONTEXT</span></article>
             </div>
           </section>
 
           <section className="build-section" id="team">
             <div className="section-heading-row build-heading">
-              <div><div className="section-kicker">TEAM MODULES</div><h2>Built in parallel.</h2></div>
-              <div className="build-badge"><Gauge size={15} />BASE PROTOTYPE</div>
+              <div><div className="section-kicker">PROJECT STATUS</div><h2>One connected demo.</h2></div>
+              <div className="build-badge"><Gauge size={15} />LOCAL DEMO INTEGRATED</div>
             </div>
             <div className="team-grid">
-              <div className="team-item"><span className="team-index">P</span><span><strong>Credential design</strong><small>Commitments & selective disclosure</small></span><span className="team-state">IN PROGRESS</span></div>
-              <div className="team-item"><span className="team-index">V</span><span><strong>Circuit & claims</strong><small>Age range & KYC status constraints</small></span><span className="team-state state-ready"><Check size={12} /> BASE READY</span></div>
-              <div className="team-item"><span className="team-index">D</span><span><strong>Prover pipeline</strong><small>Browser proving & performance</small></span><span className="team-state">IN PROGRESS</span></div>
+              <div className="team-item"><span className="team-index">P</span><span><strong>Credential design</strong><small>Commitments & selective disclosure</small></span><span className="team-state state-ready"><Check size={12} /> INTEGRATED</span></div>
+              <div className="team-item"><span className="team-index">V</span><span><strong>Circuit & claims</strong><small>Age range & KYC status constraints</small></span><span className="team-state state-ready"><Check size={12} /> INTEGRATED</span></div>
+              <div className="team-item"><span className="team-index">D</span><span><strong>Prover pipeline</strong><small>Browser proving & performance</small></span><span className="team-state state-ready"><Check size={12} /> INTEGRATED</span></div>
               <div className="team-item"><span className="team-index">S</span><span><strong>Verifier & security</strong><small>Public inputs, anti-replay & attacks</small></span><span className="team-state state-ready"><Check size={12} /> DELIVERED</span></div>
             </div>
           </section>
