@@ -15,7 +15,7 @@ npm install
 npm test
 ```
 
-The test compiles the starter circuit and checks adult and underage outputs plus out-of-range and non-boolean witness failures. Generated files are written under `build/` and are ignored by Git.
+Tests cover adult and underage circuit outputs, invalid circuit witnesses, credential signatures, selective attribute disclosures, tampering, issuer trust, and expiry. Generated files are written under `build/` and are ignored by Git.
 
 ## Run the Demo
 
@@ -43,7 +43,7 @@ Results are written to `build/bench/` (JSON and CSV). See [docs/prover-pipeline.
 
 ## Work Areas
 
-- `src/credential/`: credential format, integrity, commitments, and selective disclosure (Pallavi)
+- `src/credential/`: issuer-signed Poseidon/Merkle credentials and selective presentations (Pallavi)
 - `circuits/`: age and KYC claim constraints and circuit tests (Vaishnavi)
 - `src/prover/`: trusted setup, witness/proof generation, browser proving and proving performance (Durbasmriti)
 - `src/wallet/`: encrypted holder secret and credential storage (Durbasmriti)
@@ -52,7 +52,7 @@ Results are written to `build/bench/` (JSON and CSV). See [docs/prover-pipeline.
 - `server/`: health, proof artifact, and verification endpoints
 - `spec/`: shared interfaces and decisions that affect integration
 
-Each owner can develop inside their module against the shared contracts in `spec/`. Keep cross-module changes small and coordinate interface changes before integrating.
+Each owner can develop inside their module against the shared contracts in `spec/`. Keep cross-module changes small and coordinate interface changes before integrating. Pallavi's credential module is implemented and tested, but the current circuit still accepts self-asserted claims; issuer-signature and commitment verification inside the ZK circuit remain an integration task.
 
 ## Current Circuit Scope
 
