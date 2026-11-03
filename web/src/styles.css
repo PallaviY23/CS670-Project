@@ -264,3 +264,28 @@ h1 em { color: #4e795e; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* --- Service Provider & Verifier Portal Styles (Task S9) --- */
+.sp-section { margin-top: 25px; }
+.sp-card { background: var(--paper); border: 1px solid #dce2d9; border-radius: 6px; padding: 22px; margin-bottom: 20px; }
+.sp-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; border-bottom: 1px solid #edf1eb; padding-bottom: 12px; }
+.sp-card-header h3 { margin: 4px 0 0; font-family: var(--serif); font-size: 20px; color: #26362f; }
+.challenge-box { background: #f0f4ef; border: 1px solid #d2ded0; border-radius: 5px; padding: 14px 16px; margin: 12px 0 16px; font-family: var(--mono); font-size: 11px; word-break: break-all; }
+.challenge-field { display: flex; margin-bottom: 8px; justify-content: space-between; gap: 12px; }
+.challenge-field span:first-child { color: #627267; font-size: 10px; }
+.challenge-field strong { color: #203328; font-size: 11px; }
+.pipeline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin: 16px 0; }
+.pipeline-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border: 1px solid #e2e7e0; border-radius: 5px; font-size: 11px; }
+.pipeline-item.passed { border-left: 3px solid #3c8254; }
+.pipeline-item.failed { border-left: 3px solid var(--red); }
+.pipeline-item strong { display: block; color: #2c3e34; }
+.pipeline-item small { color: #7a887e; font-size: 9px; }
+.audit-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 10px; }
+.audit-table th { text-align: left; padding: 8px 10px; font-family: var(--mono); font-size: 9px; color: #6d7d72; border-bottom: 1px solid #dce3db; background: #f6f8f4; }
+.audit-table td { padding: 9px 10px; border-bottom: 1px solid #eef2ed; font-family: var(--mono); color: #314439; }
+.badge-verified { background: #dcece0; color: #1e5a3c; padding: 3px 7px; border-radius: 3px; font-size: 9px; font-weight: 600; }
+.badge-rejected { background: #fce8e6; color: var(--red); padding: 3px 7px; border-radius: 3px; font-size: 9px; font-weight: 600; }
+.sp-btn { background: #264a3b; color: #fff; border: 0; padding: 9px 16px; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: background 150ms; }
+.sp-btn:hover { background: #1c382c; }
+.sp-btn-secondary { background: #e6ece3; color: #2e4438; border: 1px solid #cad4c6; padding: 8px 14px; border-radius: 5px; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.sp-btn-secondary:hover { background: #dbe4d7; }
