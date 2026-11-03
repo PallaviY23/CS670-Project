@@ -9,12 +9,13 @@ const circuitDir = resolve("build/circuit");
 const wasmPath = resolve(circuitDir, "kyc_claims_js/kyc_claims.wasm");
 const zkeyPath = resolve(circuitDir, "kyc_claims_final.zkey");
 const verificationKeyPath = resolve(circuitDir, "verification_key.json");
+const manifestPath = resolve(circuitDir, "manifest.json");
 
 app.disable("x-powered-by");
 app.use(express.json({ limit: "256kb" }));
 
 function isProofReady() {
-  return [wasmPath, zkeyPath, verificationKeyPath].every(existsSync);
+  return [wasmPath, zkeyPath, verificationKeyPath, manifestPath].every(existsSync);
 }
 
 function sendArtifact(path) {
@@ -36,6 +37,7 @@ app.get("/api/health", (_request, response) => {
   });
 });
 
+app.get("/api/prover/manifest", sendArtifact(manifestPath));
 app.get("/api/prover/wasm", sendArtifact(wasmPath));
 app.get("/api/prover/zkey", sendArtifact(zkeyPath));
 
