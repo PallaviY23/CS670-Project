@@ -28,6 +28,10 @@ import {
   Ban,
   Clock,
   Database,
+  Download,
+  Upload,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 const initialHealth = { status: "checking", proofReady: false };
@@ -37,6 +41,22 @@ const stageLabels = {
   proof: "Generating Groth16 proof",
   verify: "Verifying with service provider",
 };
+
+// What the presentation reveals and hides (selective-disclosure policy, P7).
+const revealedToVerifier = [
+  ["Nullifier", "a per-service pseudonym; differs for every service provider"],
+  ["Issuer public key", "which KYC Authority signed the credential"],
+  ["Date and age policy", "the request's own date and minimum age (18)"],
+  ["Challenge and service ID", "binds this proof to this one request"],
+  ["Revocation root", "proves the credential is still active"],
+];
+const keptInWallet = [
+  "Date of birth and exact age",
+  "Credential ID, expiry date and nationality",
+  "Salts, Merkle siblings and the issuer signature",
+  "Holder secret (never leaves this browser)",
+];
+const publicSignalNames = ["nullifier", "issuerAx", "issuerAy", "currentDate", "minAgeOffset", "challenge", "spId", "revocationRoot"];
 
 function App() {
   const [activeTab, setActiveTab] = useState("workspace"); // "workspace" | "sp-view"
@@ -51,8 +71,34 @@ function App() {
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState(null);
   const [stage, setStage] = useState("artifacts");
+  const [consentRequest, setConsentRequest] = useState(null);
+  const [inspectorLog, setInspectorLog] = useState([]);
   const proverRef = useRef(null);
   const walletRef = useRef(null);
+  const inspectorIdRef = useRef(0);
+  const importInputRef = useRef(null);
+
+  // Records every API call so the inspector shows exactly what leaves the browser (A4).
+  async function apiFetch(url, init = {}) {
+    const response = await fetch(url, init);
+    let responseBody = null;
+    try {
+      responseBody = await response.clone().json();
+    } catch {
+      // non-JSON response
+    }
+    const entry = {
+      id: (inspectorIdRef.current += 1),
+      at: new Date().toLocaleTimeString(),
+      method: init.method ?? "GET",
+      url,
+      requestBody: init.body ?? null,
+      status: response.status,
+      responseBody,
+    };
+    setInspectorLog((log) => [entry, ...log].slice(0, 40));
+    return response;
+  }
 
   useEffect(() => () => proverRef.current?.terminate(), []);
 
@@ -88,7 +134,7 @@ function App() {
 
   async function loadAuditLog() {
     try {
-      const res = await fetch("/api/sp/audit-log");
+      const res = await apiFetch("/api/sp/audit-log");
       if (res.ok) {
         const data = await res.json();
         setSpAuditEntries(data.entries ?? []);
@@ -102,7 +148,7 @@ function App() {
     setSpLoading(true);
     setSpVerifyResult(null);
     try {
-      const res = await fetch("/api/sp/request", {
+      const res = await apiFetch("/api/sp/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ spId: "123456789", minAgeOffset: 180000 }),
@@ -156,7 +202,7 @@ function App() {
     try {
       if (!walletUnlocked || !walletRef.current) throw new Error("Unlock the wallet first.");
       const normalizedDob = Number(dob.replaceAll("-", ""));
-      const response = await fetch("/api/demo/issue", {
+      const response = await apiFetch("/api/issuer/issue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -181,7 +227,7 @@ function App() {
     e.preventDefault();
     if (!revokeInputId) return;
     try {
-      const res = await fetch("/api/revocation/revoke", {
+      const res = await apiFetch("/api/revocation/revoke", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credentialId: revokeInputId }),
@@ -198,20 +244,33 @@ function App() {
     }
   }
 
+  // Step 1: fetch the service provider's request and show the consent screen.
   async function handleSubmit(event) {
     event.preventDefault();
     if (!health.proofReady || busy) return;
-
-    setBusy(true);
     setError("");
     setReceipt(null);
-    setStage("artifacts");
-
     try {
       if (!credential || !holderSecret) throw new Error("Unlock a wallet and issue a credential first.");
       let request = spRequest;
       if (!request || Date.parse(request.expiresAt) <= Date.now()) request = await requestSpChallenge();
-      const pathResponse = await fetch(`/api/revocation/path/${encodeURIComponent(credential.attributes.credentialId)}`);
+      setConsentRequest(request);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Could not fetch a proof request.");
+    }
+  }
+
+  // Step 2: the holder approved; build the proof locally and submit it.
+  async function handleApproveConsent() {
+    const request = consentRequest;
+    setConsentRequest(null);
+    setBusy(true);
+    setError("");
+    setStage("artifacts");
+
+    try {
+      if (Date.parse(request.expiresAt) <= Date.now()) throw new Error("The proof request expired. Generate again for a fresh one.");
+      const pathResponse = await apiFetch(`/api/revocation/path/${encodeURIComponent(credential.attributes.credentialId)}`);
       const revocationPath = await pathResponse.json();
       if (!pathResponse.ok) throw new Error(revocationPath.error ?? "Credential is not active in the revocation registry.");
       const input = buildPresentationInput(credential, {
@@ -222,7 +281,7 @@ function App() {
       proverRef.current ??= createProverClient();
       const { proof, publicSignals, timings, proofBytes } = await proverRef.current.prove(input, { onProgress: setStage });
       setStage("verify");
-      const verificationResponse = await fetch("/api/sp/verify", {
+      const verificationResponse = await apiFetch("/api/sp/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requestId: request.requestId, proof, publicSignals }),
@@ -233,7 +292,7 @@ function App() {
         throw new Error(verification.reason ?? verification.error ?? "The verifier could not process this proof.");
       }
 
-      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw });
+      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw, publicSignals });
       setSpRequest(null);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Proof generation failed.");
@@ -244,8 +303,43 @@ function App() {
 
   function resetDemo() {
     setReceipt(null);
+    setConsentRequest(null);
     setError("");
   }
+
+  async function handleExportCredential() {
+    try {
+      const [first] = await walletRef.current.listCredentials();
+      if (!first) throw new Error("The wallet has no credential to export.");
+      const json = await walletRef.current.exportCredential(first.id);
+      const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+      const link = Object.assign(document.createElement("a"), { href: url, download: `kyc-credential-${first.id}.json` });
+      link.click();
+      URL.revokeObjectURL(url);
+      setWalletMessage("Credential exported. The file holds your date of birth: keep it private.");
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Export failed.");
+    }
+  }
+
+  async function handleImportCredential(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    try {
+      const importedId = await walletRef.current.importCredential(await file.text());
+      const stored = await walletRef.current.getCredential(importedId);
+      setCredential(stored);
+      setRevokeInputId(String(stored.attributes.credentialId));
+      setWalletMessage("Credential imported after its issuer signature was checked.");
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? `Import refused: ${caughtError.message}` : "Import refused.");
+    }
+  }
+
+  const dobDigits = dob.replaceAll("-", "");
+  const containsDob = (text) => typeof text === "string" && (text.includes(dobDigits) || text.includes(dob));
 
   const apiLabel = health.status === "online" ? "API online" : health.status === "offline" ? "API offline" : "Connecting";
 
@@ -278,6 +372,7 @@ function App() {
           >
             <Building2 size={16} />Service Provider (SP)
           </button>
+          <a className="side-link" href="#inspector"><Eye size={16} />Network inspector</a>
           <a className="side-link" href="#proof-flow"><Network size={16} />Proof flow</a>
           <a className="side-link" href="#team"><Activity size={16} />Build status</a>
         </nav>
@@ -463,6 +558,17 @@ function App() {
                       <CircleCheck size={13} />Credential {credential.attributes.credentialId} is issuer-signed and stored in the encrypted wallet.
                     </div>
                   )}
+                  {walletUnlocked && (
+                    <div className="wallet-actions">
+                      <button className="sp-btn-secondary" type="button" onClick={handleExportCredential} disabled={!credential}>
+                        <Download size={14} />Export credential
+                      </button>
+                      <button className="sp-btn-secondary" type="button" onClick={() => importInputRef.current?.click()}>
+                        <Upload size={14} />Import credential
+                      </button>
+                      <input ref={importInputRef} type="file" accept="application/json,.json" hidden onChange={handleImportCredential} />
+                    </div>
+                  )}
                   <div className="field-hint"><LockKeyhole size={13} />The holder secret stays in this browser; the verifier receives no DOB.</div>
                   <div className="claim-summary">
                     <div><span className="summary-dot" /><span>Credential</span><strong>{credential ? "Stored" : "Not issued"}</strong></div>
@@ -492,7 +598,27 @@ function App() {
                     <span className="panel-icon receipt-icon">{receipt?.accepted ? <CircleCheck size={19} /> : receipt ? <CircleAlert size={19} /> : <ShieldCheck size={19} />}</span>
                   </div>
 
-                  {!receipt && !busy ? (
+                  {consentRequest && !busy ? (
+                    <div className="consent-screen">
+                      <h3>Share a proof with service {consentRequest.spId}?</h3>
+                      <p>The service asks you to prove: <strong>age ≥ {Number(consentRequest.minAgeOffset) / 10000}</strong>, <strong>KYC verified</strong>, <strong>credential active and not expired</strong>.</p>
+                      <div className="consent-columns">
+                        <div>
+                          <span className="consent-label"><Eye size={13} />THE SERVICE LEARNS</span>
+                          <ul>{revealedToVerifier.map(([name, why]) => <li key={name}><strong>{name}</strong> · {why}</li>)}</ul>
+                        </div>
+                        <div>
+                          <span className="consent-label"><EyeOff size={13} />STAYS IN YOUR WALLET</span>
+                          <ul>{keptInWallet.map((item) => <li key={item}>{item}</li>)}</ul>
+                        </div>
+                      </div>
+                      <p className="consent-note">Request expires at {new Date(consentRequest.expiresAt).toLocaleTimeString()}. Fetching the revocation path tells the registry which credential is about to be used (a known demo limitation).</p>
+                      <div className="consent-actions">
+                        <button className="primary-button" type="button" onClick={handleApproveConsent}><ShieldCheck size={16} />Approve & prove</button>
+                        <button className="sp-btn-secondary" type="button" onClick={() => setConsentRequest(null)}>Decline</button>
+                      </div>
+                    </div>
+                  ) : !receipt && !busy ? (
                     <div className="empty-receipt">
                       <div className="empty-art"><div className="art-ring ring-one" /><div className="art-ring ring-two" /><ShieldCheck size={34} strokeWidth={1.2} /></div>
                       <h3>Awaiting proof</h3>
@@ -516,10 +642,18 @@ function App() {
                       <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
                       <div className="signal-row"><span>ageAtLeast18</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
                       <div className="signal-row"><span>kycVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                      <div className="signal-row"><span>nullifier (per-SP pseudonym)</span><strong className="mono signal-value" title={receipt.nullifier}>{receipt.nullifier ? `${receipt.nullifier.slice(0, 10)}…${receipt.nullifier.slice(-6)}` : "—"}</strong></div>
+                      <details className="signal-details">
+                        <summary>All {receipt.publicSignals?.length ?? 0} public signals sent</summary>
+                        {receipt.publicSignals?.map((value, index) => (
+                          <div className="signal-row" key={publicSignalNames[index]}><span>{index} · {publicSignalNames[index]}</span><strong className="mono signal-value" title={value}>{value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-6)}` : value}</strong></div>
+                        ))}
+                      </details>
                       <div className="receipt-metrics">
+                        <div><span>WITNESS TIME</span><strong>{receipt.witnessMs} <small>ms</small></strong></div>
                         <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
                         <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
-                        <div><span>PROOF SIZE</span><strong>{(receipt.proofBytes / 1024).toFixed(2)} <small>KB</small></strong></div>
+                        <div><span>PROOF SIZE</span><strong>{receipt.proofBytes} <small>B</small></strong></div>
                       </div>
                       <div className="receipt-id"><span>LOCAL RECEIPT ID</span><code>{receipt.receiptId}</code></div>
                       <button className="reset-button" type="button" onClick={resetDemo}><RotateCcw size={14} />Reset demo</button>
@@ -529,6 +663,43 @@ function App() {
               </section>
             </>
           )}
+          <section className="inspector-section" id="inspector" aria-label="Network inspector">
+            <div className="section-heading-row">
+              <div><div className="section-kicker">NETWORK INSPECTOR</div><h2>Everything this page sent.</h2></div>
+              <button className="sp-btn-secondary" type="button" onClick={() => setInspectorLog([])}>Clear</button>
+            </div>
+            <p className="panel-subtitle">
+              Each API request made by this page, newest first. Requests whose body or URL contains your date of birth are
+              flagged; only the issuer request should be.
+            </p>
+            {inspectorLog.length === 0 ? (
+              <p className="panel-subtitle">No requests yet.</p>
+            ) : (
+              <div className="inspector-list">
+                {inspectorLog.map((entry) => {
+                  const leaks = containsDob(entry.requestBody) || containsDob(entry.url);
+                  return (
+                    <details className={`inspector-entry ${leaks ? "leaks" : ""}`} key={entry.id}>
+                      <summary>
+                        <span className="mono">{entry.at}</span>
+                        <strong>{entry.method}</strong>
+                        <code>{entry.url}</code>
+                        <span className={`inspector-status ${entry.status < 400 ? "ok" : "bad"}`}>{entry.status}</span>
+                        <span className={`inspector-flag ${leaks ? "dob" : "clean"}`}>{leaks ? "CONTAINS DOB" : "NO DOB"}</span>
+                      </summary>
+                      <div className="inspector-body">
+                        <span>REQUEST BODY</span>
+                        <pre>{entry.requestBody ? JSON.stringify(JSON.parse(entry.requestBody), null, 2) : "(none)"}</pre>
+                        <span>RESPONSE</span>
+                        <pre>{JSON.stringify(entry.responseBody, null, 2)?.slice(0, 4000) ?? "(none)"}</pre>
+                      </div>
+                    </details>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
           <section className="flow-section" id="proof-flow">
             <div className="section-heading-row">
               <div><div className="section-kicker">HOW THIS DEMO WORKS</div><h2>Data stays with its owner.</h2></div>
@@ -556,7 +727,7 @@ function App() {
             </div>
           </section>
 
-          <footer className="page-footer"><span>CS670 PROJECT · PRIVACY-PRESERVING DIGITAL KYC</span><span>SOMESHWAR SINGH (231020) · VERIFICATION & SECURITY</span><a href="#top" aria-label="Back to top"><ArrowDownRight size={15} /></a></footer>
+          <footer className="page-footer"><span>CS670 PROJECT · PRIVACY-PRESERVING DIGITAL KYC</span><span>REDDI PALLAVI · B. VAISHNAVI · DURBASMRITI SAHA · SOMESHWAR SINGH</span><a href="#top" aria-label="Back to top"><ArrowDownRight size={15} /></a></footer>
         </div>
       </main>
     </div>

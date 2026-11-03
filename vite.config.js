@@ -19,6 +19,11 @@ export default defineConfig({
       "/api": process.env.API_PROXY_TARGET ?? "http://127.0.0.1:4000",
     },
   },
+  // Pre-bundle snarkjs at start-up. Otherwise the dev server discovers it on the
+  // first proof and reloads the page in the middle of proving.
+  optimizeDeps: {
+    include: ["snarkjs"],
+  },
   // The prover worker loads snarkjs, which needs code splitting.
   worker: {
     format: "es",

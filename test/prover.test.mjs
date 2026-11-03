@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { after, test } from "node:test";
 import { ArtifactIntegrityError, assertArtifact } from "../src/prover/artifacts.js";
 import { buildStarterInput, ProverInputError } from "../src/prover/inputs.js";
 import { proofSize, prove, verify } from "../src/prover/prove.js";
 import { circuitPaths, groth16RequiredPower, setupCircuit, terminateCurves, writeManifest } from "../src/prover/setup.js";
+import { VerifierEngine } from "../src/verifier/index.js";
 
 const workDir = resolve("build/test-prover");
 const paths = circuitPaths("kyc_claims", resolve("build/circuit"));
@@ -76,6 +77,18 @@ test("rejects artifacts whose hash differs from the manifest", async () => {
   const zkey = new Uint8Array(await readFile(zkeyPath));
   zkey[zkey.length - 1] ^= 0xff;
   await assert.rejects(assertArtifact("zkey", zkey, manifest.artifacts.zkey), ArtifactIntegrityError);
+});
+
+test("verifier start-up accepts the setup manifest and refuses a swapped key", async () => {
+  const loaded = VerifierEngine.loadArtifacts({ verificationKeyPath, manifestPath: resolve(workDir, "manifest.json") });
+  assert.equal(loaded.vkHash, manifest.artifacts.verificationKey.sha256);
+
+  const swappedKeyPath = resolve(workDir, "swapped_verification_key.json");
+  await writeFile(swappedKeyPath, JSON.stringify({ ...verificationKey, nPublic: verificationKey.nPublic + 1 }));
+  assert.throws(
+    () => VerifierEngine.loadArtifacts({ verificationKeyPath: swappedKeyPath, manifestPath: resolve(workDir, "manifest.json") }),
+    /hash mismatch/,
+  );
 });
 
 test("measures proof size in raw and JSON form", () => {

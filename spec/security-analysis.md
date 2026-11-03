@@ -22,6 +22,22 @@ The target zk-SNARK presentation circuit enforces multiple independent constrain
 | **8. Revocation Check** | `RevocationMembership(16)` | $\text{MerklePath}(\text{credId}, \text{revPath}) = \text{revRoot}$ | **Revoked credential reuse**: Prover cannot generate a valid proof if their credential was revoked. |
 | **9. Nonce Binding** | Wire equality | $challenge_{public} = challenge_{verifier}$ | **Proof replay**: Intercepted proofs cannot be presented against a new session or verifier. |
 
+Note: since the V6 optimisation, group 5 is implemented as `AttributeLeaf` ×5 plus `CredentialRoot8`, which rebuilds the whole 8-leaf tree. It no longer uses five `MerkleInclusion(3)` paths. The challenge is a public input, so Groth16 binds it to the proof. The `challengeSquare` constraint keeps it inside the constraint system. Replay is stopped by the verifier's single-use challenge store, which `test/e2e.test.mjs` checks with real proofs.
+
+### Ablation evidence (V7)
+
+`test/ablation.test.mjs` compiles `test/ablation/kyc_ablation.circom` seven times: once complete as a control, and once with each constraint group removed. For each group, a forged witness is rejected by the control and accepted by the weakened circuit. A satisfying witness is all a prover needs to produce a Groth16 proof, so each group is shown to be necessary.
+
+| Group removed | Forgery that then succeeds |
+| :--- | :--- |
+| Issuer signature | Self-signed credential presented under the trusted issuer key |
+| Credential-tree link (signature on a supplied root) | A minor reuses a genuine signature but substitutes an adult date of birth |
+| `kycStatus = 1` | Validly signed credential whose KYC status is not verified |
+| Expiry check | Credential that expired the day before |
+| Holder binding | Stolen credential file used without the holder secret |
+| Revocation membership | Revoked credential proving against the current root |
+| Date range check (`test/subtemplates.test.mjs`) | Field-wrapping "negative" date of birth passes the age check |
+
 ---
 
 ## 2. Public Signal Information Disclosure Analysis

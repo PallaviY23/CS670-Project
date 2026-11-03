@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import express from "express";
 import { build } from "vite";
 import { hostInfo, parseOptions, summarizeSamples, timestamp, writeCsv, writeJson } from "./lib/bench-utils.mjs";
+import { defaultBenchInput } from "./lib/presentation-input.mjs";
 
 const options = parseOptions({
   runs: { type: "string", default: "10" },
@@ -26,7 +27,7 @@ if (!existsSync(manifestPath)) {
   process.exit(1);
 }
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const input = options.input ? JSON.parse(await readFile(options.input, "utf8")) : { age: 21, kycVerified: 1 };
+const input = options.input ? JSON.parse(await readFile(options.input, "utf8")) : await defaultBenchInput(manifest.circuit);
 
 function findBrowser() {
   const candidates = [
