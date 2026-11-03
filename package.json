@@ -17,7 +17,10 @@
     "bench": "node scripts/bench.mjs",
     "bench:compare": "node scripts/bench.mjs --protocols groth16,plonk,fflonk",
     "bench:components": "node scripts/bench-components.mjs",
-    "bench:browser": "node scripts/bench-browser.mjs"
+    "bench:browser": "node scripts/bench-browser.mjs",
+    "circuit:presentation": "node scripts/compile.mjs",
+    "circuit:constraints": "node scripts/constraints.mjs",
+    "test:circuit": "node --test test/subtemplates.test.mjs test/presentation.test.mjs"
   },
   "dependencies": {
     "circomlib": "^2.0.5",

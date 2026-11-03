@@ -6,3 +6,4 @@ build/
 *.r1cs
 *.sym
 *_js/
+bin/
