@@ -80,7 +80,7 @@ async function initVerifier() {
 await initVerifier();
 
 function isProofReady() {
-  return [wasmPath, zkeyPath, verificationKeyPath].every(existsSync);
+  return [wasmPath, zkeyPath, verificationKeyPath, manifestPath].every(existsSync);
 }
 
 function sendArtifact(path) {
@@ -103,6 +103,7 @@ app.get("/api/health", (_request, response) => {
   });
 });
 
+app.get("/api/prover/manifest", sendArtifact(manifestPath));
 app.get("/api/prover/wasm", sendArtifact(wasmPath));
 app.get("/api/prover/zkey", sendArtifact(zkeyPath));
 

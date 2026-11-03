@@ -157,7 +157,7 @@ h1 em { color: #4e795e; font-weight: 500; }
 .signal-row strong { font-size: 8px; font-weight: 500; }
 .signal-pass { color: #3a7951; }
 .signal-fail { color: #a15b3f; }
-.receipt-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+.receipt-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 16px; }
 .receipt-metrics div { display: grid; gap: 7px; min-width: 0; padding: 9px 8px; background: #f0f3ed; }
 .receipt-metrics span, .receipt-id span { color: #859087; font-size: 7px; }
 .receipt-metrics strong { color: #3f5948; font-family: var(--mono); font-size: 12px; font-weight: 500; }

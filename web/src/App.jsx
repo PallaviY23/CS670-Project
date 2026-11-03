@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { buildStarterInput } from "../../src/prover/inputs.js";
+import { createProverClient } from "../../src/prover/worker-client.js";
 import {
   Activity,
   ArrowDownRight,
@@ -22,7 +24,13 @@ import {
   Database,
 } from "lucide-react";
 
-const initialHealth = { status: "checking", proofReady: false, revocationRoot: null };
+const initialHealth = { status: "checking", proofReady: false };
+const stageLabels = {
+  artifacts: "Loading proving artifacts",
+  witness: "Computing witness",
+  proof: "Generating Groth16 proof",
+  verify: "Verifying with service provider",
+};
 
 async function createReceiptId(proof, publicSignals) {
   const payload = new TextEncoder().encode(JSON.stringify({ proof, publicSignals }));
@@ -41,6 +49,10 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [receipt, setReceipt] = useState(null);
+  const [stage, setStage] = useState("artifacts");
+  const proverRef = useRef(null);
+
+  useEffect(() => () => proverRef.current?.terminate(), []);
 
   // Service Provider (Task S9) state
   const [spRequest, setSpRequest] = useState(null);
@@ -130,17 +142,13 @@ function App() {
     setBusy(true);
     setError("");
     setReceipt(null);
-    const startedAt = performance.now();
+    setStage("artifacts");
 
     try {
-      const { groth16 } = await import("snarkjs");
-      const { proof, publicSignals } = await groth16.fullProve(
-        { age: Number(age), kycVerified: kycVerified ? 1 : 0 },
-        "/api/prover/wasm",
-        "/api/prover/zkey",
-      );
-      const provingMs = Number((performance.now() - startedAt).toFixed(2));
-      const proofBytes = new TextEncoder().encode(JSON.stringify(proof)).length;
+      const input = buildStarterInput({ age, kycVerified });
+      proverRef.current ??= createProverClient();
+      const { proof, publicSignals, timings, proofBytes } = await proverRef.current.prove(input, { onProgress: setStage });
+      setStage("verify");
       const [receiptId, verificationResponse] = await Promise.all([
         createReceiptId(proof, publicSignals),
         fetch("/api/verify", {
@@ -155,7 +163,7 @@ function App() {
         throw new Error(verification.error ?? "The verifier could not process this proof.");
       }
 
-      setReceipt({ ...verification, provingMs, proofBytes, receiptId });
+      setReceipt({ ...verification, ...timings, proofBytes: proofBytes.raw, receiptId });
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Proof generation failed.");
     } finally {
@@ -322,57 +330,13 @@ function App() {
                     <RefreshCw size={12} /> Refresh Log
                   </button>
                 </div>
-                <p className="panel-subtitle">
-                  In compliance with GDPR and our Threat Model (Task S1), this audit log records <strong>only</strong> the per-SP pseudonym nullifier, timestamp, and verification status. No date of birth, name, attribute values, salts, or proof bytes are ever stored.
-                </p>
-
-                {spAuditEntries.length > 0 ? (
-                  <table className="audit-table">
-                    <thead>
-                      <tr>
-                        <th>RECEIPT ID</th>
-                        <th>SP ID</th>
-                        <th>PSEUDONYM NULLIFIER</th>
-                        <th>STATUS</th>
-                        <th>TIMESTAMP</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {spAuditEntries.map((entry, idx) => (
-                        <tr key={idx}>
-                          <td><code>{entry.receiptId}</code></td>
-                          <td>{entry.spId}</td>
-                          <td><code>{entry.nullifier.slice(0, 16)}...</code></td>
-                          <td>
-                            <span className={entry.accepted ? "badge-verified" : "badge-rejected"}>
-                              {entry.accepted ? "VERIFIED" : "REJECTED"}
-                            </span>
-                          </td>
-                          <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <div style={{ color: "#77857b", fontSize: "11px", fontStyle: "italic" }}>
-                    No presentations logged yet. When proofs are verified at /api/sp/verify, privacy-safe receipts appear here.
-                  </div>
-                )}
-              </div>
-            </section>
-          ) : (
-            /* --- PROOF WORKSPACE VIEW --- */
-            <>
-              <section className="page-intro" id="proof-workspace">
-                <div className="intro-copy">
-                  <div className="eyebrow"><span className="eyebrow-line" />ZERO-KNOWLEDGE DEMONSTRATION</div>
-                  <h1>Prove the claim.<br /><em>Keep the identity.</em></h1>
-                  <p className="intro-description">Show that a KYC requirement is met without handing over the information behind it.</p>
-                </div>
-                <div className="intro-side-note">
-                  <span className="side-note-index">01 / 03</span>
-                  <p>One proof. Two claims.<br />No personal data in the request.</p>
-                  <div className="mini-claims"><span>AGE ≥ 18</span><span>KYC VERIFIED</span></div>
+              ) : busy ? (
+                <div className="verifying-state">
+                  <span className="large-spinner" />
+                  <h3>Building a proof</h3>
+                  <p>Your witness is being processed locally. No age value leaves this tab.</p>
+                  <div className="progress-track"><span /></div>
+                  <span className="mono progress-caption">{stageLabels[stage]?.toUpperCase()} · GROTH16 · BN128</span>
                 </div>
               </section>
 
@@ -391,12 +355,14 @@ function App() {
                     </div>
                     <span className="panel-icon"><Fingerprint size={18} /></span>
                   </div>
-                  <p className="panel-subtitle">These values are used in your browser to build the proof.</p>
-
-                  <label className="field-label" htmlFor="age">Your age <span>PRIVATE</span></label>
-                  <div className="age-input-wrap">
-                    <input id="age" name="age" type="number" min="0" max="255" required value={age} onChange={(event) => setAge(event.target.value)} />
-                    <span>years</span>
+                  <div className="signal-heading"><span>PUBLIC SIGNALS</span><span>RESULT</span></div>
+                  <div className="signal-row"><span>isAdult</span><strong className={receipt.claims?.ageAtLeast18 ? "signal-pass" : "signal-fail"}>{receipt.claims?.ageAtLeast18 ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                  <div className="signal-row"><span>isVerified</span><strong className={receipt.claims?.kycVerified ? "signal-pass" : "signal-fail"}>{receipt.claims?.kycVerified ? "1 · PASS" : "0 · FAIL"}</strong></div>
+                  <div className="receipt-metrics">
+                    <div><span>WITNESS TIME</span><strong>{receipt.witnessMs} <small>ms</small></strong></div>
+                    <div><span>PROVE TIME</span><strong>{receipt.provingMs} <small>ms</small></strong></div>
+                    <div><span>VERIFY TIME</span><strong>{receipt.verificationMs} <small>ms</small></strong></div>
+                    <div><span>PROOF SIZE</span><strong>{receipt.proofBytes} <small>B</small></strong></div>
                   </div>
                   <div className="field-hint"><LockKeyhole size={13} /> Age is not sent to the API.</div>
 
